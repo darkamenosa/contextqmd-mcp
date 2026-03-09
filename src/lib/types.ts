@@ -39,9 +39,9 @@ export interface Manifest {
   source: {
     type: string;
     url: string;
-    etag: string;
-  };
-  page_index: { url: string; sha256: string };
+    etag: string | null;
+  } | null;
+  page_index: { url: string; sha256: string | null };
   profiles: Record<
     string,
     {

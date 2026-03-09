@@ -192,39 +192,52 @@ function createServer(deps: ServerDeps): McpServer {
             continue;
           }
 
-          // ATOMIC UPDATE: download new version FIRST, then remove old
-          // This prevents data loss if the download fails partway through.
-          cache.saveManifest(lib.namespace, lib.name, latestVersion, newManifest.data);
-          const allPages = await registryClient.getAllPageIndex(lib.namespace, lib.name, latestVersion);
-          cache.savePageIndex(lib.namespace, lib.name, latestVersion, allPages);
+          // ATOMIC UPDATE: download new version FIRST, then remove old.
+          // If download fails, clean up partial new-version data and keep old.
+          try {
+            cache.saveManifest(lib.namespace, lib.name, latestVersion, newManifest.data);
+            const allPages = await registryClient.getAllPageIndex(lib.namespace, lib.name, latestVersion);
+            cache.savePageIndex(lib.namespace, lib.name, latestVersion, allPages);
 
-          let downloadedCount = 0;
-          for (const page of allPages) {
-            try {
-              const pageContent = await registryClient.getPageContent(
-                lib.namespace, lib.name, latestVersion, page.page_uid,
-              );
-              cache.savePage(lib.namespace, lib.name, latestVersion, page.page_uid, pageContent.data.content_md);
-              downloadedCount++;
-            } catch { /* skip failed pages */ }
+            let downloadedCount = 0;
+            const failedPages: string[] = [];
+            for (const page of allPages) {
+              try {
+                const pageContent = await registryClient.getPageContent(
+                  lib.namespace, lib.name, latestVersion, page.page_uid,
+                );
+                cache.savePage(lib.namespace, lib.name, latestVersion, page.page_uid, pageContent.data.content_md);
+                downloadedCount++;
+              } catch {
+                failedPages.push(page.page_uid);
+              }
+            }
+
+            const indexedCount = await indexer.indexLibraryVersion(lib.namespace, lib.name, latestVersion);
+
+            // New version is ready — now remove old version
+            indexer.removeLibraryVersion(lib.namespace, lib.name, lib.version);
+            cache.removeVersion(lib.namespace, lib.name, lib.version);
+            cache.removeInstalled(lib.namespace, lib.name, lib.version);
+
+            cache.addInstalled({
+              ...lib,
+              version: latestVersion,
+              installed_at: new Date().toISOString(),
+              manifest_checksum: newChecksum ?? null,
+              page_count: downloadedCount,
+            });
+
+            let msg = `${lib.namespace}/${lib.name}: ${lib.version} → ${latestVersion} (${downloadedCount} pages, ${indexedCount} indexed)`;
+            if (failedPages.length > 0) {
+              msg += ` [${failedPages.length} pages failed]`;
+            }
+            results.push(msg);
+          } catch (updateErr) {
+            // Clean up partially-written new version data
+            cache.removeVersion(lib.namespace, lib.name, latestVersion);
+            throw updateErr;
           }
-
-          const indexedCount = await indexer.indexLibraryVersion(lib.namespace, lib.name, latestVersion);
-
-          // Now that new version is fully downloaded and indexed, remove old version
-          indexer.removeLibraryVersion(lib.namespace, lib.name, lib.version);
-          cache.removeVersion(lib.namespace, lib.name, lib.version);
-          cache.removeInstalled(lib.namespace, lib.name, lib.version);
-
-          cache.addInstalled({
-            ...lib,
-            version: latestVersion,
-            installed_at: new Date().toISOString(),
-            manifest_checksum: newChecksum ?? null,
-            page_count: downloadedCount,
-          });
-
-          results.push(`${lib.namespace}/${lib.name}: ${lib.version} → ${latestVersion} (${downloadedCount} pages, ${indexedCount} indexed)`);
         } catch (err) {
           results.push(`${lib.namespace}/${lib.name}: update failed — ${(err as Error).message}`);
         }

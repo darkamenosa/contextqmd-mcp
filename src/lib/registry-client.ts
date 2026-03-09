@@ -75,18 +75,24 @@ export class RegistryClient {
 
   /**
    * Fetch ALL pages from the page-index by following cursor pagination.
-   * This is critical — the registry paginates at 20 items per page,
-   * so libraries with >20 pages require multiple requests.
+   * The registry paginates at 20 items per page, so libraries with >20
+   * pages require multiple requests. Capped at 100 fetches (2000 pages).
    */
   async getAllPageIndex(
     namespace: string,
     name: string,
     version: string,
   ): Promise<PageRecord[]> {
+    const MAX_PAGE_FETCHES = 100;
     const allPages: PageRecord[] = [];
     let cursor: string | undefined;
+    let iterations = 0;
 
     do {
+      if (++iterations > MAX_PAGE_FETCHES) {
+        console.warn(`[contextqmd] Page index pagination exceeded ${MAX_PAGE_FETCHES} pages, stopping`);
+        break;
+      }
       const response = await this.getPageIndex(namespace, name, version, cursor);
       allPages.push(...response.data);
       cursor = response.meta.cursor ?? undefined;

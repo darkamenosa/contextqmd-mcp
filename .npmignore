@@ -1,0 +1,25 @@
+# Source
+src/
+
+# Tests
+**/__tests__/
+vitest.config.ts
+coverage/
+
+# Config
+tsconfig.json
+.eslintrc*
+.prettierrc*
+.editorconfig
+
+# Dev
+.git/
+.github/
+.vscode/
+.idea/
+*.tgz
+node_modules/
+
+# CI
+.gitlab-ci.yml
+.travis.yml

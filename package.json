@@ -1,16 +1,35 @@
 {
   "name": "contextqmd-mcp",
   "version": "0.1.0",
+  "description": "MCP server for local-first, version-aware library documentation via ContextQMD",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/contextqmd/contextqmd-mcp.git"
+  },
+  "keywords": [
+    "mcp",
+    "documentation",
+    "contextqmd",
+    "qmd"
+  ],
   "type": "module",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "contextqmd-mcp": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
+    "postbuild": "node -e \"const fs=require('fs');const f='dist/index.js';const c=fs.readFileSync(f,'utf8');if(!c.startsWith('#!')){fs.writeFileSync(f,'#!/usr/bin/env node\\n'+c)}\"",
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.1",

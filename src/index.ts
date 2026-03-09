@@ -103,13 +103,13 @@ function createServer(deps: ServerDeps): McpServer {
       const manifest = await registryClient.getManifest(namespace, name, targetVersion);
       cache.saveManifest(namespace, name, targetVersion, manifest.data);
 
-      // Fetch page index
-      const pageIndex = await registryClient.getPageIndex(namespace, name, targetVersion);
-      cache.savePageIndex(namespace, name, targetVersion, pageIndex.data);
+      // Fetch ALL pages from page-index (follows cursor pagination)
+      const allPages = await registryClient.getAllPageIndex(namespace, name, targetVersion);
+      cache.savePageIndex(namespace, name, targetVersion, allPages);
 
       // Download each page's content
       let downloadedCount = 0;
-      for (const page of pageIndex.data) {
+      for (const page of allPages) {
         try {
           const pageContent = await registryClient.getPageContent(
             namespace, name, targetVersion, page.page_uid,
@@ -197,18 +197,14 @@ function createServer(deps: ServerDeps): McpServer {
             continue;
           }
 
-          // Remove old version from index
-          indexer.removeLibraryVersion(lib.namespace, lib.name, lib.version);
-          cache.removeVersion(lib.namespace, lib.name, lib.version);
-          cache.removeInstalled(lib.namespace, lib.name, lib.version);
-
-          // Install new version
+          // ATOMIC UPDATE: download new version FIRST, then remove old
+          // This prevents data loss if the download fails partway through.
           cache.saveManifest(lib.namespace, lib.name, latestVersion, newManifest.data);
-          const pageIndex = await registryClient.getPageIndex(lib.namespace, lib.name, latestVersion);
-          cache.savePageIndex(lib.namespace, lib.name, latestVersion, pageIndex.data);
+          const allPages = await registryClient.getAllPageIndex(lib.namespace, lib.name, latestVersion);
+          cache.savePageIndex(lib.namespace, lib.name, latestVersion, allPages);
 
           let downloadedCount = 0;
-          for (const page of pageIndex.data) {
+          for (const page of allPages) {
             try {
               const pageContent = await registryClient.getPageContent(
                 lib.namespace, lib.name, latestVersion, page.page_uid,
@@ -219,6 +215,11 @@ function createServer(deps: ServerDeps): McpServer {
           }
 
           const indexedCount = await indexer.indexLibraryVersion(lib.namespace, lib.name, latestVersion);
+
+          // Now that new version is fully downloaded and indexed, remove old version
+          indexer.removeLibraryVersion(lib.namespace, lib.name, lib.version);
+          cache.removeVersion(lib.namespace, lib.name, lib.version);
+          cache.removeInstalled(lib.namespace, lib.name, lib.version);
 
           cache.addInstalled({
             ...lib,

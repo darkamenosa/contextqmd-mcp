@@ -131,15 +131,18 @@ describe.skipIf(skipIntegration)("Integration: MCP ↔ Registry", () => {
       expect(stable!.version).toBe("16.1.6");
     });
 
-    it("GET /manifest returns version manifest", async () => {
+    it("GET /manifest returns contract-conforming manifest", async () => {
       const result = await client.getManifest("vercel", "nextjs", "16.1.6");
       expect(result.data).toBeDefined();
-      // Actual API returns a richer shape than the Manifest type
+      // Contract: flat top-level fields, not nested library/version objects
       const data = result.data as unknown as Record<string, unknown>;
-      const library = data.library as Record<string, string>;
-      expect(library).toBeDefined();
-      expect(library.namespace).toBe("vercel");
-      expect(library.name).toBe("nextjs");
+      expect(data.schema_version).toBe("1.0");
+      expect(data.namespace).toBe("vercel");
+      expect(data.name).toBe("nextjs");
+      expect(data.version).toBe("16.1.6");
+      expect(data.doc_count).toBeDefined();
+      expect(data.page_index).toBeDefined();
+      expect(data.provenance).toBeDefined();
     });
 
     it("GET /page-index lists pages", async () => {

@@ -73,6 +73,28 @@ export class RegistryClient {
     );
   }
 
+  /**
+   * Fetch ALL pages from the page-index by following cursor pagination.
+   * This is critical — the registry paginates at 20 items per page,
+   * so libraries with >20 pages require multiple requests.
+   */
+  async getAllPageIndex(
+    namespace: string,
+    name: string,
+    version: string,
+  ): Promise<PageRecord[]> {
+    const allPages: PageRecord[] = [];
+    let cursor: string | undefined;
+
+    do {
+      const response = await this.getPageIndex(namespace, name, version, cursor);
+      allPages.push(...response.data);
+      cursor = response.meta.cursor ?? undefined;
+    } while (cursor);
+
+    return allPages;
+  }
+
   async getPageContent(
     namespace: string,
     name: string,

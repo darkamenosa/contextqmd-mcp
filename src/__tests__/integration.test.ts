@@ -5,25 +5,31 @@
  * Requires:
  *   1. Registry running: cd contextqmd-registry && bin/dev
  *   2. Seed data loaded: bin/rails db:seed
- *   3. Environment vars: INTEGRATION_TEST_TOKEN (write-permission token)
  *
- * Skip with: vitest run --exclude 'integration'
+ * API is free (no token required for read-only endpoints).
+ * Set SKIP_INTEGRATION=1 to skip these tests.
  */
 
 import { describe, it, expect, beforeAll } from "vitest";
 import { RegistryClient } from "../lib/registry-client.js";
 
 const REGISTRY_URL = process.env.INTEGRATION_REGISTRY_URL ?? "http://localhost:3000";
-const TOKEN = process.env.INTEGRATION_TEST_TOKEN;
+const TOKEN = process.env.INTEGRATION_TEST_TOKEN; // optional, for future write tests
 
-// Skip entire suite if no token or registry not reachable
-const canRun = !!TOKEN;
+const skipIntegration = process.env.SKIP_INTEGRATION === "1";
 
-describe.skipIf(!canRun)("Integration: MCP ↔ Registry", () => {
+describe.skipIf(skipIntegration)("Integration: MCP ↔ Registry", () => {
   let client: RegistryClient;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     client = new RegistryClient(REGISTRY_URL, TOKEN);
+    // Quick check that server is reachable
+    try {
+      await client.health();
+    } catch {
+      console.warn("Registry not reachable at", REGISTRY_URL, "- skipping integration tests");
+      return;
+    }
   });
 
   // ─── B00: Health + Capabilities ───────────────────────────────────

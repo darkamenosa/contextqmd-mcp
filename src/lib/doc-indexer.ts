@@ -14,16 +14,11 @@
 import {
   createStore,
   type Store,
-  type SearchResult,
   hashContent,
-  DEFAULT_EMBED_MODEL,
   hybridQuery,
   vectorSearchQuery,
   type HybridQueryResult,
-  type VectorSearchResult,
 } from "@tobilu/qmd/dist/store.js";
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
 import type { LocalCache } from "./local-cache.js";
 
 export interface IndexedPage {
@@ -240,6 +235,16 @@ export class DocIndexer {
    * based on the mode (or auto-selects).
    */
   async search(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
+    // Warn when version is specified without library — the QMD-level collection
+    // filter requires both, so version filtering falls back to post-query filtering
+    // which is less efficient (fetches more results then discards).
+    if (options.version && !options.library) {
+      console.warn(
+        `[contextqmd] version filter "${options.version}" specified without library — ` +
+        `version will be applied as a post-query filter`,
+      );
+    }
+
     const requestedMode = options.mode ?? "auto";
     const effectiveMode = requestedMode === "auto" ? classifyQuery(query) : requestedMode;
 
@@ -277,7 +282,7 @@ export class DocIndexer {
     // Otherwise filter post-search in mapResults
 
     const results = this.store.searchFTS(query, limit * 2, collectionFilter);
-    return this.mapResults(results, options, "fts").slice(0, limit);
+    return this.mapAnyResults(results, options, "fts").slice(0, limit);
   }
 
   /**
@@ -301,7 +306,7 @@ export class DocIndexer {
         }),
         10_000,
       );
-      return this.mapVectorResults(results, options, "vector").slice(0, limit);
+      return this.mapAnyResults(results, options, "vector").slice(0, limit);
     } catch {
       // Vector search failed, timed out, or no embeddings — return empty
       return [];
@@ -331,7 +336,9 @@ export class DocIndexer {
         }),
         10_000,
       );
-      return this.mapHybridResults(results, options, "hybrid").slice(0, limit);
+      return this.mapAnyResults<HybridQueryResult>(results, options, "hybrid",
+        (r) => r.bestChunk?.slice(0, 500) ?? r.body?.slice(0, 500) ?? "",
+      ).slice(0, limit);
     } catch {
       // Hybrid search failed or timed out — return empty (caller will fall back to FTS)
       return [];
@@ -339,61 +346,32 @@ export class DocIndexer {
   }
 
   /**
-   * Map QMD FTS SearchResult[] to our DocSearchResult format.
+   * Shared mapper: convert any QMD result type to DocSearchResult[].
+   *
+   * Extracts the collection name from `collectionName` (FTS results) or by
+   * parsing the first segment of `displayPath` (vector/hybrid results).
+   * Applies library and version post-filters, and extracts a snippet using
+   * the `snippetFn` callback for mode-specific snippet logic.
    */
-  private mapResults(results: SearchResult[], options: SearchOptions, mode: SearchMode): DocSearchResult[] {
+  private mapAnyResults<T extends { displayPath: string; title: string; score: number; body?: string }>(
+    results: T[],
+    options: SearchOptions,
+    mode: SearchMode,
+    snippetFn: (r: T) => string = (r) => r.body?.slice(0, 500) ?? "",
+  ): DocSearchResult[] {
     return results
-      .filter(r => {
-        if (!options.library) return true;
-        // Collection name is "namespace__name__version" — parse and match
-        const parsed = DocIndexer.parseCollectionName(r.collectionName);
-        if (!parsed) return false;
-        return `${parsed.namespace}/${parsed.name}` === options.library;
-      })
       .map(r => {
-        const parsed = DocIndexer.parseCollectionName(r.collectionName);
-        const library = parsed ? `${parsed.namespace}/${parsed.name}` : r.collectionName;
-
-        // displayPath is "collectionName/filename.md" — strip collection prefix
-        let pageUid = r.displayPath;
-        if (pageUid.startsWith(r.collectionName + "/")) {
-          pageUid = pageUid.slice(r.collectionName.length + 1);
-        }
-        pageUid = pageUid.replace(/\.md$/, "");
-
-        return {
-          pageUid,
-          title: r.title,
-          path: r.displayPath,
-          score: r.score,
-          snippet: r.body?.slice(0, 500) ?? "",
-          library,
-          searchMode: mode,
-        };
-      });
-  }
-
-  /**
-   * Map QMD VectorSearchResult[] to our DocSearchResult format.
-   */
-  private mapVectorResults(results: VectorSearchResult[], options: SearchOptions, mode: SearchMode): DocSearchResult[] {
-    return results
-      .filter(r => {
-        if (!options.library) return true;
-        // displayPath is "collectionName/filename.md"
-        const collName = r.displayPath.split("/")[0];
-        const parsed = DocIndexer.parseCollectionName(collName);
-        if (!parsed) return false;
-        return `${parsed.namespace}/${parsed.name}` === options.library;
-      })
-      .map(r => {
-        const collName = r.displayPath.split("/")[0];
+        // Prefer collectionName directly (available on FTS SearchResult);
+        // fall back to parsing the first segment of displayPath (vector/hybrid).
+        const collName = (r as { collectionName?: string }).collectionName
+          ?? r.displayPath.split("/")[0];
         const parsed = DocIndexer.parseCollectionName(collName);
         const library = parsed ? `${parsed.namespace}/${parsed.name}` : collName;
 
+        // Strip collection prefix from displayPath to get pageUid
         let pageUid = r.displayPath;
-        if (pageUid.includes("/")) {
-          pageUid = pageUid.slice(pageUid.indexOf("/") + 1);
+        if (pageUid.startsWith(collName + "/")) {
+          pageUid = pageUid.slice(collName.length + 1);
         }
         pageUid = pageUid.replace(/\.md$/, "");
 
@@ -402,49 +380,20 @@ export class DocIndexer {
           title: r.title,
           path: r.displayPath,
           score: r.score,
-          snippet: r.body?.slice(0, 500) ?? "",
+          snippet: snippetFn(r),
           library,
           searchMode: mode,
+          _version: parsed?.version,
         };
-      });
-  }
-
-  /**
-   * Map QMD HybridQueryResult[] to our DocSearchResult format.
-   */
-  private mapHybridResults(results: HybridQueryResult[], options: SearchOptions, mode: SearchMode): DocSearchResult[] {
-    return results
-      .filter(r => {
-        if (!options.library) return true;
-        const collName = r.displayPath.split("/")[0];
-        const parsed = DocIndexer.parseCollectionName(collName);
-        if (!parsed) return false;
-        return `${parsed.namespace}/${parsed.name}` === options.library;
       })
-      .map(r => {
-        const collName = r.displayPath.split("/")[0];
-        const parsed = DocIndexer.parseCollectionName(collName);
-        const library = parsed ? `${parsed.namespace}/${parsed.name}` : collName;
-
-        let pageUid = r.displayPath;
-        if (pageUid.includes("/")) {
-          pageUid = pageUid.slice(pageUid.indexOf("/") + 1);
-        }
-        pageUid = pageUid.replace(/\.md$/, "");
-
-        // Use bestChunk as snippet if available, otherwise body prefix
-        const snippet = r.bestChunk?.slice(0, 500) ?? r.body?.slice(0, 500) ?? "";
-
-        return {
-          pageUid,
-          title: r.title,
-          path: r.displayPath,
-          score: r.score,
-          snippet,
-          library,
-          searchMode: mode,
-        };
-      });
+      .filter(r => {
+        // Library filter
+        if (options.library && r.library !== options.library) return false;
+        // Version filter (works with or without library filter)
+        if (options.version && r._version !== options.version) return false;
+        return true;
+      })
+      .map(({ _version, ...rest }) => rest);
   }
 }
 

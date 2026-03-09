@@ -2,10 +2,26 @@
  * Doc indexer — bridges local cache and QMD store.
  *
  * Indexes downloaded markdown pages into a QMD SQLite database
- * so they can be searched via FTS and (optionally) vector search.
+ * so they can be searched via FTS and (optionally) vector/hybrid search.
+ *
+ * Search modes:
+ *   fts    — BM25 full-text search (fast, keyword-based, always available)
+ *   vector — Semantic vector search via QMD embeddings (requires indexed embeddings)
+ *   hybrid — BM25 + vector + query expansion + RRF + reranking (most powerful, requires LLM)
+ *   auto   — Smart routing: picks the best mode based on query characteristics
  */
 
-import { createStore, type Store, type SearchResult, hashContent } from "@tobilu/qmd/dist/store.js";
+import {
+  createStore,
+  type Store,
+  type SearchResult,
+  hashContent,
+  DEFAULT_EMBED_MODEL,
+  hybridQuery,
+  vectorSearchQuery,
+  type HybridQueryResult,
+  type VectorSearchResult,
+} from "@tobilu/qmd/dist/store.js";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { LocalCache } from "./local-cache.js";
@@ -16,11 +32,14 @@ export interface IndexedPage {
   path: string;
 }
 
+/** Search mode for docs queries */
+export type SearchMode = "fts" | "vector" | "hybrid" | "auto";
+
 export interface SearchOptions {
   library?: string; // namespace/name
   version?: string;
   maxResults?: number;
-  mode?: "fts" | "hybrid";
+  mode?: SearchMode;
 }
 
 export interface DocSearchResult {
@@ -30,6 +49,68 @@ export interface DocSearchResult {
   score: number;
   snippet: string;
   library: string; // namespace/name
+  searchMode: SearchMode; // which mode was actually used
+}
+
+/**
+ * Classify a query to pick the best search mode.
+ *
+ * Heuristics:
+ *   - Exact symbols, config keys, error messages, code patterns → FTS (precise lexical match)
+ *   - Conceptual/how-to/fuzzy questions → vector (semantic similarity)
+ *   - Broad multi-aspect queries → hybrid (combines both + reranking)
+ *   - Default → FTS (cheapest, always available)
+ */
+export function classifyQuery(query: string): SearchMode {
+  const q = query.trim();
+
+  // Very short queries (1-2 tokens) are best served by FTS
+  if (q.split(/\s+/).length <= 2 && !q.includes("?")) {
+    return "fts";
+  }
+
+  // Code patterns: camelCase, snake_case, dot.notation, backticks, error codes
+  const codePatterns = [
+    /[a-z][A-Z]/,                           // camelCase
+    /[a-z]_[a-z]/,                           // snake_case
+    /\w+\.\w+\.\w+/,                         // dot.notation (config keys)
+    /`[^`]+`/,                               // backticked code
+    /^[A-Z_]{3,}$/,                          // ALL_CAPS constant
+    /\berr(or)?[:\s]+/i,                     // error messages
+    /\d+\.\d+\.\d+/,                         // version numbers
+    /[{}()\[\]<>]/,                           // brackets/braces
+    /^(get|set|use|create|delete|update)\w+/i, // API method names
+    /\w+::\w+/,                              // namespace::method
+    /\w+\/\w+/,                              // path-like
+  ];
+
+  if (codePatterns.some(p => p.test(q))) {
+    return "fts";
+  }
+
+  // Conceptual/how-to patterns → vector search
+  const conceptualPatterns = [
+    /^(how|what|why|when|where|can|should|is it|does)\b/i,
+    /\b(best practice|pattern|approach|strategy|concept|overview|guide)\b/i,
+    /\b(difference between|compare|vs\.?|versus)\b/i,
+    /\b(explain|understand|learn|tutorial)\b/i,
+  ];
+
+  if (conceptualPatterns.some(p => p.test(q))) {
+    // Long conceptual queries benefit from hybrid
+    if (q.split(/\s+/).length >= 6) {
+      return "hybrid";
+    }
+    return "vector";
+  }
+
+  // Multi-aspect queries (long, multiple topics) → hybrid
+  if (q.split(/\s+/).length >= 8) {
+    return "hybrid";
+  }
+
+  // Default: FTS is cheapest and always works
+  return "fts";
 }
 
 export class DocIndexer {
@@ -155,7 +236,34 @@ export class DocIndexer {
   }
 
   /**
-   * Search across installed docs using FTS.
+   * Unified search dispatcher. Routes to the appropriate search backend
+   * based on the mode (or auto-selects).
+   */
+  async search(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
+    const requestedMode = options.mode ?? "auto";
+    const effectiveMode = requestedMode === "auto" ? classifyQuery(query) : requestedMode;
+
+    // Vector and hybrid modes require embeddings to be present.
+    // If they're not available, fall back to FTS gracefully.
+    if (effectiveMode === "vector") {
+      const results = await this.searchVector(query, options);
+      if (results.length > 0) return results;
+      // Fallback to FTS if vector returned nothing (no embeddings indexed)
+      return this.searchFTS(query, options).map(r => ({ ...r, searchMode: "fts" as SearchMode }));
+    }
+
+    if (effectiveMode === "hybrid") {
+      const results = await this.searchHybrid(query, options);
+      if (results.length > 0) return results;
+      // Fallback to FTS if hybrid returned nothing
+      return this.searchFTS(query, options).map(r => ({ ...r, searchMode: "fts" as SearchMode }));
+    }
+
+    return this.searchFTS(query, options);
+  }
+
+  /**
+   * Search across installed docs using FTS (BM25).
    */
   searchFTS(query: string, options: SearchOptions = {}): DocSearchResult[] {
     const limit = options.maxResults ?? 10;
@@ -169,13 +277,71 @@ export class DocIndexer {
     // Otherwise filter post-search in mapResults
 
     const results = this.store.searchFTS(query, limit * 2, collectionFilter);
-    return this.mapResults(results, options).slice(0, limit);
+    return this.mapResults(results, options, "fts").slice(0, limit);
   }
 
   /**
-   * Map QMD search results to our DocSearchResult format.
+   * Search using QMD vector search (semantic similarity).
+   * Returns empty array if no embeddings are indexed.
    */
-  private mapResults(results: SearchResult[], options: SearchOptions): DocSearchResult[] {
+  async searchVector(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
+    const limit = options.maxResults ?? 10;
+
+    let collectionFilter: string | undefined;
+    if (options.library && options.version) {
+      const [ns, nm] = options.library.split("/");
+      collectionFilter = DocIndexer.collectionName(ns, nm, options.version);
+    }
+
+    try {
+      const results = await withTimeout(
+        vectorSearchQuery(this.store, query, {
+          collection: collectionFilter,
+          limit: limit * 2,
+        }),
+        10_000,
+      );
+      return this.mapVectorResults(results, options, "vector").slice(0, limit);
+    } catch {
+      // Vector search failed, timed out, or no embeddings — return empty
+      return [];
+    }
+  }
+
+  /**
+   * Search using QMD hybrid query (BM25 + vector + expansion + reranking).
+   * Falls back gracefully if LLM/embeddings are not available.
+   * Includes a timeout to prevent hanging when LLM model loading is slow.
+   */
+  async searchHybrid(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
+    const limit = options.maxResults ?? 10;
+
+    let collectionFilter: string | undefined;
+    if (options.library && options.version) {
+      const [ns, nm] = options.library.split("/");
+      collectionFilter = DocIndexer.collectionName(ns, nm, options.version);
+    }
+
+    try {
+      // Timeout hybrid query at 10s — LLM model loading can hang
+      const results = await withTimeout(
+        hybridQuery(this.store, query, {
+          collection: collectionFilter,
+          limit,
+        }),
+        10_000,
+      );
+      return this.mapHybridResults(results, options, "hybrid").slice(0, limit);
+    } catch {
+      // Hybrid search failed or timed out — return empty (caller will fall back to FTS)
+      return [];
+    }
+  }
+
+  /**
+   * Map QMD FTS SearchResult[] to our DocSearchResult format.
+   */
+  private mapResults(results: SearchResult[], options: SearchOptions, mode: SearchMode): DocSearchResult[] {
     return results
       .filter(r => {
         if (!options.library) return true;
@@ -202,9 +368,95 @@ export class DocIndexer {
           score: r.score,
           snippet: r.body?.slice(0, 500) ?? "",
           library,
+          searchMode: mode,
         };
       });
   }
+
+  /**
+   * Map QMD VectorSearchResult[] to our DocSearchResult format.
+   */
+  private mapVectorResults(results: VectorSearchResult[], options: SearchOptions, mode: SearchMode): DocSearchResult[] {
+    return results
+      .filter(r => {
+        if (!options.library) return true;
+        // displayPath is "collectionName/filename.md"
+        const collName = r.displayPath.split("/")[0];
+        const parsed = DocIndexer.parseCollectionName(collName);
+        if (!parsed) return false;
+        return `${parsed.namespace}/${parsed.name}` === options.library;
+      })
+      .map(r => {
+        const collName = r.displayPath.split("/")[0];
+        const parsed = DocIndexer.parseCollectionName(collName);
+        const library = parsed ? `${parsed.namespace}/${parsed.name}` : collName;
+
+        let pageUid = r.displayPath;
+        if (pageUid.includes("/")) {
+          pageUid = pageUid.slice(pageUid.indexOf("/") + 1);
+        }
+        pageUid = pageUid.replace(/\.md$/, "");
+
+        return {
+          pageUid,
+          title: r.title,
+          path: r.displayPath,
+          score: r.score,
+          snippet: r.body?.slice(0, 500) ?? "",
+          library,
+          searchMode: mode,
+        };
+      });
+  }
+
+  /**
+   * Map QMD HybridQueryResult[] to our DocSearchResult format.
+   */
+  private mapHybridResults(results: HybridQueryResult[], options: SearchOptions, mode: SearchMode): DocSearchResult[] {
+    return results
+      .filter(r => {
+        if (!options.library) return true;
+        const collName = r.displayPath.split("/")[0];
+        const parsed = DocIndexer.parseCollectionName(collName);
+        if (!parsed) return false;
+        return `${parsed.namespace}/${parsed.name}` === options.library;
+      })
+      .map(r => {
+        const collName = r.displayPath.split("/")[0];
+        const parsed = DocIndexer.parseCollectionName(collName);
+        const library = parsed ? `${parsed.namespace}/${parsed.name}` : collName;
+
+        let pageUid = r.displayPath;
+        if (pageUid.includes("/")) {
+          pageUid = pageUid.slice(pageUid.indexOf("/") + 1);
+        }
+        pageUid = pageUid.replace(/\.md$/, "");
+
+        // Use bestChunk as snippet if available, otherwise body prefix
+        const snippet = r.bestChunk?.slice(0, 500) ?? r.body?.slice(0, 500) ?? "";
+
+        return {
+          pageUid,
+          title: r.title,
+          path: r.displayPath,
+          score: r.score,
+          snippet,
+          library,
+          searchMode: mode,
+        };
+      });
+  }
+}
+
+/** Race a promise against a timeout. Rejects with an error if timeout fires first. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
 }
 
 /** Extract title from markdown content (first # heading or filename) */

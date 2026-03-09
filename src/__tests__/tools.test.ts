@@ -105,6 +105,54 @@ describe("Tool logic", () => {
     });
   });
 
+  describe("search_docs (unified with modes)", () => {
+    beforeEach(async () => {
+      cache.savePage("vercel", "nextjs", "15.1.0", "app-router", "# App Router\n\nThe App Router is a new routing model in Next.js 13+ that uses React Server Components.");
+      cache.savePage("vercel", "nextjs", "15.1.0", "data-fetching", "# Data Fetching\n\nNext.js supports getServerSideProps, getStaticProps, and ISR.");
+      await indexer.indexLibraryVersion("vercel", "nextjs", "15.1.0");
+      cache.addInstalled({
+        namespace: "vercel",
+        name: "nextjs",
+        version: "15.1.0",
+        profile: "slim",
+        installed_at: "2026-03-09T12:00:00Z",
+        manifest_checksum: null,
+        page_count: 2,
+        pinned: false,
+      });
+    });
+
+    it("search with explicit fts mode works", async () => {
+      const results = await indexer.search("App Router", { mode: "fts" });
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0].searchMode).toBe("fts");
+    });
+
+    it("search with auto mode selects fts for keyword queries", async () => {
+      const results = await indexer.search("getServerSideProps", { mode: "auto" });
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0].searchMode).toBe("fts");
+    });
+
+    it("vector mode falls back to fts when no embeddings", async () => {
+      const results = await indexer.search("routing model", { mode: "vector" });
+      expect(results.length).toBeGreaterThan(0);
+      // Should have fallen back to fts
+      expect(results[0].searchMode).toBe("fts");
+    });
+
+    it("search dispatches correctly for all mode values", async () => {
+      // Verify that search() accepts all valid mode values without error
+      // (hybrid is not tested here because expandQuery loads LLM models which is slow;
+      // see doc-indexer.test.ts for the full hybrid test with longer timeout)
+      for (const mode of ["fts", "auto"] as const) {
+        const results = await indexer.search("routing model", { mode });
+        expect(results.length).toBeGreaterThan(0);
+        expect(results[0].searchMode).toBeDefined();
+      }
+    });
+  });
+
   describe("pin_docs_version", () => {
     it("pins and unpins a library", () => {
       const lib: InstalledLibrary = {
@@ -170,10 +218,16 @@ describe("Tool logic", () => {
         pinned: false,
       });
 
-      // Search
-      const results = indexer.searchFTS("useState");
+      // Search via unified dispatcher
+      const results = await indexer.search("useState");
       expect(results.length).toBeGreaterThan(0);
       expect(results[0].title).toBe("Hooks");
+      expect(results[0].searchMode).toBeDefined();
+
+      // Legacy FTS still works
+      const ftsResults = indexer.searchFTS("useState");
+      expect(ftsResults.length).toBeGreaterThan(0);
+      expect(ftsResults[0].title).toBe("Hooks");
 
       // List installed
       const installed = cache.listInstalled();

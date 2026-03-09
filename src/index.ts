@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { loadConfig } from "./lib/config.js";
 import { RegistryClient } from "./lib/registry-client.js";
 import { LocalCache, type InstalledLibrary } from "./lib/local-cache.js";
-import { DocIndexer } from "./lib/doc-indexer.js";
+import { DocIndexer, type SearchMode } from "./lib/doc-indexer.js";
 
 const VERSION = "0.2.0";
 
@@ -244,7 +244,7 @@ function createServer(deps: ServerDeps): McpServer {
     {
       title: "Search Docs",
       description:
-        "Search installed documentation using full-text search. Returns relevant doc snippets from the local QMD index.",
+        "Search installed documentation. Supports multiple search modes: 'fts' (keyword/BM25), 'vector' (semantic), 'hybrid' (BM25 + vector + reranking), or 'auto' (smart routing based on query). Default: auto.",
       inputSchema: {
         query: z.string().describe("Search query"),
         library: z
@@ -256,24 +256,32 @@ function createServer(deps: ServerDeps): McpServer {
           .number()
           .optional()
           .describe("Max results to return (default: 5)"),
+        mode: z
+          .enum(["fts", "vector", "hybrid", "auto"])
+          .optional()
+          .describe("Search mode: fts (keyword), vector (semantic), hybrid (combined + reranking), auto (smart routing). Default: auto"),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ query, library, version, max_results }) => {
+    async ({ query, library, version, max_results, mode }) => {
       const installed = cache.listInstalled();
       if (installed.length === 0) {
         return textResult("No documentation packages installed. Use install_docs first.");
       }
 
-      const results = indexer.searchFTS(query, {
+      const results = await indexer.search(query, {
         library,
         version,
         maxResults: max_results ?? 5,
+        mode: mode ?? "auto",
       });
 
       if (results.length === 0) {
         return textResult(`No results found for "${query}"${library ? ` in ${library}` : ""}.`);
       }
+
+      const usedMode = results[0]?.searchMode ?? "fts";
+      const modeLabel = mode === "auto" || !mode ? ` [auto→${usedMode}]` : ` [${usedMode}]`;
 
       const output = results.map((r, i) => {
         const header = `## [${i + 1}] ${r.title} (${r.library})`;
@@ -283,7 +291,7 @@ function createServer(deps: ServerDeps): McpServer {
         return `${header}\n\n${snippet}`;
       });
 
-      return textResult(output.join("\n\n---\n\n"));
+      return textResult(`Search mode: ${usedMode}${modeLabel}\n\n` + output.join("\n\n---\n\n"));
     },
   );
 

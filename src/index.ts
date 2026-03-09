@@ -73,14 +73,9 @@ function createServer(deps: ServerDeps): McpServer {
           .string()
           .describe("Library identifier in namespace/name format (e.g., 'vercel/nextjs')"),
         version: z.string().optional().describe("Version to install (default: library's default)"),
-        mode: z
-          .enum(["slim", "full"])
-          .optional()
-          .describe("Install mode: slim downloads page index only, full downloads all content (default: slim)"),
       },
     },
-    async ({ library, version, mode }) => {
-      const profile = mode ?? "slim";
+    async ({ library, version }) => {
       const [namespace, name] = library.split("/");
       if (!namespace || !name) {
         return textResult("Error: library must be in namespace/name format (e.g., 'vercel/nextjs')");
@@ -129,7 +124,7 @@ function createServer(deps: ServerDeps): McpServer {
         namespace,
         name,
         version: targetVersion,
-        profile,
+        profile: "full",
         installed_at: new Date().toISOString(),
         manifest_checksum: manifest.data.provenance?.manifest_checksum ?? null,
         page_count: downloadedCount,
@@ -138,8 +133,8 @@ function createServer(deps: ServerDeps): McpServer {
       cache.addInstalled(installed);
 
       return textResult(
-        `Installed ${library}@${targetVersion} (${profile} mode)\n` +
-        `  Downloaded: ${downloadedCount} pages\n` +
+        `Installed ${library}@${targetVersion}\n` +
+        `  Downloaded: ${downloadedCount}/${allPages.length} pages\n` +
         `  Indexed: ${indexedCount} pages for search`,
       );
     },
@@ -286,13 +281,18 @@ function createServer(deps: ServerDeps): McpServer {
 
       const output = results.map((r, i) => {
         const header = `## [${i + 1}] ${r.title} (${r.library})`;
-        const snippet = r.snippet.length > 300
-          ? r.snippet.slice(0, 300) + "..."
+        const meta = `page_uid: ${r.pageUid} | score: ${r.score.toFixed(2)}`;
+        const snippet = r.snippet.length > 500
+          ? r.snippet.slice(0, 500) + "..."
           : r.snippet;
-        return `${header}\n\n${snippet}`;
+        return `${header}\n${meta}\n\n${snippet}`;
       });
 
-      return textResult(`Search mode: ${usedMode}${modeLabel}\n\n` + output.join("\n\n---\n\n"));
+      return textResult(
+        `Search: ${usedMode}${modeLabel} | ${results.length} results\n` +
+        `Use hydrate_missing_page with page_uid to fetch full content.\n\n` +
+        output.join("\n\n---\n\n"),
+      );
     },
   );
 

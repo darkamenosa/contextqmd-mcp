@@ -48,7 +48,7 @@ describe.skipIf(skipIntegration)("Integration: MCP ↔ Registry", () => {
       expect(result.data.name).toBe("ContextQMD Registry");
       expect(result.data.version).toBeDefined();
       expect(result.data.features).toBeDefined();
-      expect(result.data.features.bundle_download).toBe(true);
+      expect(result.data.features.bundle_download).toBe(false); // not yet implemented
       expect(result.data.features.cursor_pagination).toBe(true);
     });
   });

@@ -4,12 +4,31 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { Command } from "commander";
+import { join } from "node:path";
 import { loadConfig } from "./lib/config.js";
 import { RegistryClient } from "./lib/registry-client.js";
+import { LocalCache, type InstalledLibrary } from "./lib/local-cache.js";
+import { DocIndexer } from "./lib/doc-indexer.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
-function createServer(registryClient: RegistryClient): McpServer {
+interface ServerDeps {
+  registryClient: RegistryClient;
+  cache: LocalCache;
+  indexer: DocIndexer;
+}
+
+function textResult(text: string) {
+  return { content: [{ type: "text" as const, text }] };
+}
+
+function jsonResult(data: unknown) {
+  return textResult(JSON.stringify(data, null, 2));
+}
+
+function createServer(deps: ServerDeps): McpServer {
+  const { registryClient, cache, indexer } = deps;
+
   const server = new McpServer(
     { name: "ContextQMD", version: VERSION },
     {
@@ -18,7 +37,7 @@ function createServer(registryClient: RegistryClient): McpServer {
     },
   );
 
-  // Tool 1: resolve_docs_library — calls registry
+  // ── Tool 1: resolve_docs_library ──────────────────────────────────
   server.registerTool(
     "resolve_docs_library",
     {
@@ -32,95 +51,200 @@ function createServer(registryClient: RegistryClient): McpServer {
         version_hint: z
           .string()
           .optional()
-          .describe(
-            "Version hint (e.g., 'latest', 'stable', or exact version '16.1.6')",
-          ),
+          .describe("Version hint (e.g., 'latest', 'stable', or exact version)"),
       },
       annotations: { readOnlyHint: true },
     },
     async ({ name, version_hint }) => {
-      const result = await registryClient.resolve({
-        query: name,
-        version_hint,
-      });
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result.data, null, 2),
-          },
-        ],
-      };
+      const result = await registryClient.resolve({ query: name, version_hint });
+      return jsonResult(result.data);
     },
   );
 
-  // Tool 2: install_docs (stub)
+  // ── Tool 2: install_docs ──────────────────────────────────────────
   server.registerTool(
     "install_docs",
     {
       title: "Install Docs",
       description:
-        "Install documentation package for a library. Downloads the manifest and doc bundle from the registry.",
+        "Install documentation package for a library. Downloads the manifest and pages from the registry, then indexes them locally for search.",
       inputSchema: {
         library: z
           .string()
-          .describe(
-            "Library identifier in namespace/name format (e.g., 'vercel/nextjs')",
-          ),
-        version: z.string().optional().describe("Version to install"),
+          .describe("Library identifier in namespace/name format (e.g., 'vercel/nextjs')"),
+        version: z.string().optional().describe("Version to install (default: library's default)"),
         mode: z
           .enum(["slim", "full"])
           .optional()
-          .describe("Install mode (default: slim)"),
+          .describe("Install mode: slim downloads page index only, full downloads all content (default: slim)"),
       },
     },
     async ({ library, version, mode }) => {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `[stub] Would install ${library}@${version ?? "latest"} in ${mode ?? "slim"} mode`,
-          },
-        ],
+      const profile = mode ?? "slim";
+      const [namespace, name] = library.split("/");
+      if (!namespace || !name) {
+        return textResult("Error: library must be in namespace/name format (e.g., 'vercel/nextjs')");
+      }
+
+      // Resolve version if not specified
+      let targetVersion = version;
+      if (!targetVersion) {
+        const resolved = await registryClient.resolve({ query: library });
+        targetVersion = resolved.data.version.version;
+      }
+
+      // Check if already installed with same version
+      const existing = cache.findInstalled(namespace, name, targetVersion);
+      if (existing) {
+        return textResult(`${library}@${targetVersion} is already installed (${existing.page_count} pages, ${existing.profile} mode). Use update_docs to refresh.`);
+      }
+
+      // Fetch manifest
+      const manifest = await registryClient.getManifest(namespace, name, targetVersion);
+      cache.saveManifest(namespace, name, targetVersion, manifest.data);
+
+      // Fetch page index
+      const pageIndex = await registryClient.getPageIndex(namespace, name, targetVersion);
+      cache.savePageIndex(namespace, name, targetVersion, pageIndex.data);
+
+      // Download each page's content
+      let downloadedCount = 0;
+      for (const page of pageIndex.data) {
+        try {
+          const pageContent = await registryClient.getPageContent(
+            namespace, name, targetVersion, page.page_uid,
+          );
+          cache.savePage(namespace, name, targetVersion, page.page_uid, pageContent.data.content_md);
+          downloadedCount++;
+        } catch {
+          // Skip pages that fail to download (slim mode may not have all pages)
+        }
+      }
+
+      // Index into QMD for search
+      const indexedCount = await indexer.indexLibraryVersion(namespace, name, targetVersion);
+
+      // Record installation
+      const installed: InstalledLibrary = {
+        namespace,
+        name,
+        version: targetVersion,
+        profile,
+        installed_at: new Date().toISOString(),
+        manifest_checksum: manifest.data.provenance?.manifest_checksum ?? null,
+        page_count: downloadedCount,
+        pinned: false,
       };
+      cache.addInstalled(installed);
+
+      return textResult(
+        `Installed ${library}@${targetVersion} (${profile} mode)\n` +
+        `  Downloaded: ${downloadedCount} pages\n` +
+        `  Indexed: ${indexedCount} pages for search`,
+      );
     },
   );
 
-  // Tool 3: update_docs (stub)
+  // ── Tool 3: update_docs ───────────────────────────────────────────
   server.registerTool(
     "update_docs",
     {
       title: "Update Docs",
       description:
-        "Update installed documentation to the latest version. Compares manifest checksums to skip no-op updates.",
+        "Update installed documentation to the latest version. Compares manifest checksums to skip no-op updates. Skips pinned libraries.",
       inputSchema: {
         library: z
           .string()
           .optional()
-          .describe(
-            "Library to update in namespace/name format (updates all if omitted)",
-          ),
+          .describe("Library to update in namespace/name format (updates all if omitted)"),
       },
     },
     async ({ library }) => {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `[stub] Would update ${library ?? "all libraries"}`,
-          },
-        ],
-      };
+      const installed = cache.listInstalled();
+      const targets = library
+        ? installed.filter(l => `${l.namespace}/${l.name}` === library)
+        : installed;
+
+      if (targets.length === 0) {
+        return textResult(library
+          ? `${library} is not installed. Use install_docs first.`
+          : "No documentation packages installed.");
+      }
+
+      const results: string[] = [];
+      for (const lib of targets) {
+        if (lib.pinned) {
+          results.push(`${lib.namespace}/${lib.name}@${lib.version}: skipped (pinned)`);
+          continue;
+        }
+
+        try {
+          // Resolve latest version
+          const resolved = await registryClient.resolve({ query: `${lib.namespace}/${lib.name}` });
+          const latestVersion = resolved.data.version.version;
+
+          if (latestVersion === lib.version) {
+            results.push(`${lib.namespace}/${lib.name}@${lib.version}: already up to date`);
+            continue;
+          }
+
+          // Fetch new manifest and check checksum
+          const newManifest = await registryClient.getManifest(lib.namespace, lib.name, latestVersion);
+          const newChecksum = newManifest.data.provenance?.manifest_checksum;
+
+          if (newChecksum && newChecksum === lib.manifest_checksum) {
+            results.push(`${lib.namespace}/${lib.name}@${lib.version}: checksum unchanged, skipping`);
+            continue;
+          }
+
+          // Remove old version from index
+          indexer.removeLibraryVersion(lib.namespace, lib.name, lib.version);
+          cache.removeVersion(lib.namespace, lib.name, lib.version);
+          cache.removeInstalled(lib.namespace, lib.name, lib.version);
+
+          // Install new version
+          cache.saveManifest(lib.namespace, lib.name, latestVersion, newManifest.data);
+          const pageIndex = await registryClient.getPageIndex(lib.namespace, lib.name, latestVersion);
+          cache.savePageIndex(lib.namespace, lib.name, latestVersion, pageIndex.data);
+
+          let downloadedCount = 0;
+          for (const page of pageIndex.data) {
+            try {
+              const pageContent = await registryClient.getPageContent(
+                lib.namespace, lib.name, latestVersion, page.page_uid,
+              );
+              cache.savePage(lib.namespace, lib.name, latestVersion, page.page_uid, pageContent.data.content_md);
+              downloadedCount++;
+            } catch { /* skip failed pages */ }
+          }
+
+          const indexedCount = await indexer.indexLibraryVersion(lib.namespace, lib.name, latestVersion);
+
+          cache.addInstalled({
+            ...lib,
+            version: latestVersion,
+            installed_at: new Date().toISOString(),
+            manifest_checksum: newChecksum ?? null,
+            page_count: downloadedCount,
+          });
+
+          results.push(`${lib.namespace}/${lib.name}: ${lib.version} → ${latestVersion} (${downloadedCount} pages, ${indexedCount} indexed)`);
+        } catch (err) {
+          results.push(`${lib.namespace}/${lib.name}: update failed — ${(err as Error).message}`);
+        }
+      }
+
+      return textResult(results.join("\n"));
     },
   );
 
-  // Tool 4: search_docs (stub — will wire to QMD in a later task)
+  // ── Tool 4: search_docs ───────────────────────────────────────────
   server.registerTool(
     "search_docs",
     {
       title: "Search Docs",
       description:
-        "Search installed documentation. Returns a token-bounded context pack from the local QMD index.",
+        "Search installed documentation using full-text search. Returns relevant doc snippets from the local QMD index.",
       inputSchema: {
         query: z.string().describe("Search query"),
         library: z
@@ -128,81 +252,111 @@ function createServer(registryClient: RegistryClient): McpServer {
           .optional()
           .describe("Filter to specific library (namespace/name)"),
         version: z.string().optional().describe("Filter to specific version"),
-        mode: z
-          .enum(["auto", "search", "vsearch", "query"])
-          .optional()
-          .describe("Search mode (default: auto)"),
-        max_tokens: z
+        max_results: z
           .number()
           .optional()
-          .describe("Max tokens in response (default: 3000)"),
+          .describe("Max results to return (default: 5)"),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ query, library }) => {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `[stub] Would search "${query}" in ${library ?? "all libraries"}`,
-          },
-        ],
-      };
+    async ({ query, library, version, max_results }) => {
+      const installed = cache.listInstalled();
+      if (installed.length === 0) {
+        return textResult("No documentation packages installed. Use install_docs first.");
+      }
+
+      const results = indexer.searchFTS(query, {
+        library,
+        version,
+        maxResults: max_results ?? 5,
+      });
+
+      if (results.length === 0) {
+        return textResult(`No results found for "${query}"${library ? ` in ${library}` : ""}.`);
+      }
+
+      const output = results.map((r, i) => {
+        const header = `## [${i + 1}] ${r.title} (${r.library})`;
+        const snippet = r.snippet.length > 300
+          ? r.snippet.slice(0, 300) + "..."
+          : r.snippet;
+        return `${header}\n\n${snippet}`;
+      });
+
+      return textResult(output.join("\n\n---\n\n"));
     },
   );
 
-  // Tool 5: list_installed_docs (stub)
+  // ── Tool 5: list_installed_docs ───────────────────────────────────
   server.registerTool(
     "list_installed_docs",
     {
       title: "List Installed Docs",
       description:
-        "List all locally installed documentation packages with their versions and install modes.",
+        "List all locally installed documentation packages with their versions, install modes, and page counts.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
     async () => {
-      return {
-        content: [
-          { type: "text" as const, text: "[stub] No docs installed yet" },
-        ],
-      };
+      const installed = cache.listInstalled();
+      if (installed.length === 0) {
+        return textResult("No documentation packages installed. Use install_docs to add some.");
+      }
+
+      const lines = installed.map(lib => {
+        const pinLabel = lib.pinned ? " [pinned]" : "";
+        return `- ${lib.namespace}/${lib.name}@${lib.version} (${lib.profile}, ${lib.page_count} pages)${pinLabel}`;
+      });
+
+      return textResult(`Installed documentation packages:\n\n${lines.join("\n")}`);
     },
   );
 
-  // Tool 6: pin_docs_version (stub)
+  // ── Tool 6: pin_docs_version ──────────────────────────────────────
   server.registerTool(
     "pin_docs_version",
     {
       title: "Pin Docs Version",
       description:
-        "Pin a library to a specific documentation version, preventing automatic updates.",
+        "Pin a library to its current documentation version, preventing automatic updates.",
       inputSchema: {
         library: z
           .string()
           .describe("Library identifier (namespace/name)"),
-        version: z.string().describe("Version to pin to"),
+        pin: z
+          .boolean()
+          .optional()
+          .describe("true to pin, false to unpin (default: true)"),
       },
     },
-    async ({ library, version }) => {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `[stub] Would pin ${library} to ${version}`,
-          },
-        ],
-      };
+    async ({ library, pin }) => {
+      const shouldPin = pin ?? true;
+      const [namespace, name] = library.split("/");
+      if (!namespace || !name) {
+        return textResult("Error: library must be in namespace/name format");
+      }
+
+      const existing = cache.findInstalled(namespace, name);
+      if (!existing) {
+        return textResult(`${library} is not installed.`);
+      }
+
+      cache.addInstalled({ ...existing, pinned: shouldPin });
+      return textResult(
+        shouldPin
+          ? `Pinned ${library}@${existing.version}. It will not be updated automatically.`
+          : `Unpinned ${library}@${existing.version}. It will be updated with update_docs.`,
+      );
     },
   );
 
-  // Tool 7: hydrate_missing_page (stub)
+  // ── Tool 7: hydrate_missing_page ──────────────────────────────────
   server.registerTool(
     "hydrate_missing_page",
     {
       title: "Hydrate Missing Page",
       description:
-        "Fetch a specific missing page from the registry and add it to the local index. Used when slim install lacks a page needed by search.",
+        "Fetch a specific page from the registry and add it to the local index. Used when a slim install lacks a page needed by search.",
       inputSchema: {
         library: z
           .string()
@@ -212,14 +366,34 @@ function createServer(registryClient: RegistryClient): McpServer {
       },
     },
     async ({ library, version, page_uid }) => {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `[stub] Would hydrate page ${page_uid} from ${library}@${version}`,
-          },
-        ],
-      };
+      const [namespace, name] = library.split("/");
+      if (!namespace || !name) {
+        return textResult("Error: library must be in namespace/name format");
+      }
+
+      // Check if page already exists locally
+      const existingContent = cache.readPage(namespace, name, version, page_uid);
+      if (existingContent) {
+        return textResult(`Page ${page_uid} already exists locally for ${library}@${version}.`);
+      }
+
+      // Fetch from registry
+      const pageContent = await registryClient.getPageContent(namespace, name, version, page_uid);
+      cache.savePage(namespace, name, version, page_uid, pageContent.data.content_md);
+
+      // Index into QMD
+      await indexer.indexPage(namespace, name, version, page_uid, pageContent.data.content_md);
+
+      // Update page count in installed state
+      const existing = cache.findInstalled(namespace, name, version);
+      if (existing) {
+        cache.addInstalled({
+          ...existing,
+          page_count: cache.countPages(namespace, name, version),
+        });
+      }
+
+      return textResult(`Hydrated page ${page_uid} for ${library}@${version}. Now searchable locally.`);
     },
   );
 
@@ -231,37 +405,38 @@ async function main() {
   program
     .name("contextqmd-mcp")
     .version(VERSION)
-    .option(
-      "--transport <type>",
-      "Transport type (stdio or http)",
-      "stdio",
-    )
+    .option("--transport <type>", "Transport type (stdio or http)", "stdio")
     .option("--port <number>", "HTTP port", "3001")
     .option("--registry <url>", "Registry URL override")
     .option("--token <token>", "API token")
+    .option("--cache-dir <path>", "Cache directory override")
     .parse();
 
   const opts = program.opts();
   const config = loadConfig();
 
   const registryUrl = (opts.registry as string | undefined) ?? config.registry_url;
-  const token =
-    (opts.token as string | undefined) ?? process.env.CONTEXTQMD_API_TOKEN;
+  const token = (opts.token as string | undefined) ?? process.env.CONTEXTQMD_API_TOKEN;
+  const cacheDir = (opts["cache-dir"] as string | undefined) ?? config.local_cache_dir;
+
   const registryClient = new RegistryClient(registryUrl, token);
-  const server = createServer(registryClient);
+  const cache = new LocalCache(cacheDir);
+  const indexer = new DocIndexer(join(cacheDir, "index.sqlite"), cache);
+
+  const server = createServer({ registryClient, cache, indexer });
 
   if (opts.transport === "stdio") {
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error(`ContextQMD MCP Server v${VERSION} running on stdio`);
   } else {
-    // HTTP transport — implement in a later phase
-    console.error(
-      "HTTP transport not yet implemented. Use --transport stdio",
-    );
+    console.error("HTTP transport not yet implemented. Use --transport stdio");
     process.exit(1);
   }
 }
+
+// Export for testing
+export { createServer, type ServerDeps };
 
 main().catch((err) => {
   console.error("Fatal:", err);

@@ -122,7 +122,7 @@ export class RegistryClient {
 
   private headers(): Record<string, string> {
     const h: Record<string, string> = { Accept: "application/json" };
-    if (this.token) h["Authorization"] = `Bearer ${this.token}`;
+    if (this.token) h["Authorization"] = `Token ${this.token}`;
     return h;
   }
 }

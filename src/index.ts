@@ -57,7 +57,13 @@ function createServer(deps: ServerDeps): McpServer {
     },
     async ({ name, version_hint }) => {
       const result = await registryClient.resolve({ query: name, version_hint });
-      return jsonResult(result.data);
+      const { library, version } = result.data;
+      const summary =
+        `Library: ${library.namespace}/${library.name} (${library.display_name})\n` +
+        `Version: ${version.version} [${version.channel}]\n` +
+        `Default: ${library.default_version}\n` +
+        `Install: install_docs({ library: "${library.namespace}/${library.name}", version: "${version.version}" })`;
+      return textResult(summary + "\n\n" + JSON.stringify(result.data, null, 2));
     },
   );
 
@@ -72,7 +78,7 @@ function createServer(deps: ServerDeps): McpServer {
         library: z
           .string()
           .describe("Library identifier in namespace/name format (e.g., 'vercel/nextjs')"),
-        version: z.string().optional().describe("Version to install (default: library's default)"),
+        version: z.string().optional().describe("Version to install: exact version, 'stable', 'latest', or omit for default"),
       },
     },
     async ({ library, version }) => {
@@ -81,12 +87,11 @@ function createServer(deps: ServerDeps): McpServer {
         return textResult("Error: library must be in namespace/name format (e.g., 'vercel/nextjs')");
       }
 
-      // Resolve version if not specified
-      let targetVersion = version;
-      if (!targetVersion) {
-        const resolved = await registryClient.resolve({ query: library });
-        targetVersion = resolved.data.version.version;
-      }
+      const resolved = await registryClient.resolve({
+        query: library,
+        version_hint: version,
+      });
+      const targetVersion = resolved.data.version.version;
 
       // Check if already installed with same version
       const existing = cache.findInstalled(namespace, name, targetVersion);
@@ -293,8 +298,8 @@ function createServer(deps: ServerDeps): McpServer {
       const modeLabel = mode === "auto" || !mode ? ` [auto→${usedMode}]` : ` [${usedMode}]`;
 
       const output = results.map((r, i) => {
-        const header = `## [${i + 1}] ${r.title} (${r.library})`;
-        const meta = `page_uid: ${r.pageUid} | score: ${r.score.toFixed(2)}`;
+        const header = `## [${i + 1}] ${r.title} (${r.library}@${r.version})`;
+        const meta = `page_uid: ${r.pageUid} | version: ${r.version} | score: ${r.score.toFixed(2)}`;
         const snippet = r.snippet.length > 500
           ? r.snippet.slice(0, 500) + "..."
           : r.snippet;
@@ -345,22 +350,25 @@ function createServer(deps: ServerDeps): McpServer {
         library: z
           .string()
           .describe("Library identifier (namespace/name)"),
+        version: z.string().optional().describe("Version to pin (defaults to the installed version)"),
         pin: z
           .boolean()
           .optional()
           .describe("true to pin, false to unpin (default: true)"),
       },
     },
-    async ({ library, pin }) => {
+    async ({ library, version, pin }) => {
       const shouldPin = pin ?? true;
       const [namespace, name] = library.split("/");
       if (!namespace || !name) {
         return textResult("Error: library must be in namespace/name format");
       }
 
-      const existing = cache.findInstalled(namespace, name);
+      const existing = cache.findInstalled(namespace, name, version);
       if (!existing) {
-        return textResult(`${library} is not installed.`);
+        return textResult(version
+          ? `${library}@${version} is not installed.`
+          : `${library} is not installed.`);
       }
 
       cache.addInstalled({ ...existing, pinned: shouldPin });

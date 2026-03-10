@@ -44,6 +44,7 @@ export interface DocSearchResult {
   score: number;
   snippet: string;
   library: string; // namespace/name
+  version: string;
   searchMode: SearchMode; // which mode was actually used
 }
 
@@ -393,7 +394,7 @@ export class DocIndexer {
         if (options.version && r._version !== options.version) return false;
         return true;
       })
-      .map(({ _version, ...rest }) => rest);
+      .map(({ _version, ...rest }) => ({ ...rest, version: _version ?? "unknown" }));
   }
 }
 

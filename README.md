@@ -4,7 +4,7 @@ MCP server for local-first, version-aware library documentation. Install, search
 
 ## What it does
 
-ContextQMD is an alternative to context7 that keeps documentation local. It downloads doc packages from the [ContextQMD registry](https://github.com/tuyenhx/contextqmd-registry), indexes them with QMD (BM25 + vector + LLM reranking), and serves results through the Model Context Protocol.
+ContextQMD is an alternative to context7 that keeps documentation local. It downloads doc packages from the [ContextQMD registry](https://github.com/darkamenosa/contextqmd-registry), indexes them with QMD (BM25 + vector + LLM reranking), and serves results through the Model Context Protocol.
 
 ## Install
 

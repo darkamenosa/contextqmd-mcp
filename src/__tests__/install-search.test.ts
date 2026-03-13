@@ -157,8 +157,12 @@ describe("Install → Search (bundle-first local flow)", () => {
       downloadBundle: async () => bundleBytes,
     } as unknown as ServerDeps["registryClient"];
 
-    const install = await handleInstallDocs(deps, { library: "demo/kit", version: "3.0.0" });
+    const install = await handleInstallDocs(deps, { library: "kit", version: "3.0.0" });
     expect(install.content[0].text).toContain("Installed from bundle");
+    expect(install.structuredContent).toMatchObject({
+      library: "demo/kit",
+      version: "3.0.0",
+    });
 
     const search = await handleSearchDocs(deps, {
       query: "keep search local",

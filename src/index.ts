@@ -15,7 +15,7 @@ import { LocalCache, normalizeDocPath } from "./lib/local-cache.js";
 import { DocIndexer, type SearchMode } from "./lib/doc-indexer.js";
 import type { Manifest, ManifestBundle, PageRecord } from "./lib/types.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.1.0";
 const DOC_INDEX_SCHEMA_VERSION = 2;
 const DEFAULT_EXCERPT_MAX_LINES = 60;
 const DEFAULT_EXPAND_BEFORE = 30;
@@ -731,19 +731,12 @@ export async function handleSearchLibraries(
 }
 
 export async function handleInstallDocs(deps: ServerDeps, input: InstallDocsInput): Promise<ToolResult> {
-  const parsed = parseLibrary(input.library);
-  if (!parsed) {
-    return errorResult(
-      "library must be in namespace/name format (for example 'vercel/nextjs').",
-      "INVALID_LIBRARY",
-    );
-  }
-
-  const { namespace, name } = parsed;
   const resolved = await deps.registryClient.resolve({
     query: input.library,
     version_hint: input.version,
   });
+  const { namespace, name } = resolved.data.library;
+  const canonicalLibrary = librarySlug(namespace, name);
   const targetVersion = resolved.data.version.version;
   const manifest = (await deps.registryClient.getManifest(namespace, name, targetVersion)).data;
   const targetChecksum = manifest.provenance?.manifest_checksum ?? null;
@@ -752,9 +745,9 @@ export async function handleInstallDocs(deps: ServerDeps, input: InstallDocsInpu
   if (existing) {
     if (existing.manifest_checksum === targetChecksum) {
       return structuredTextResult(
-        `${input.library}@${targetVersion} is already installed and current (${existing.page_count} pages, ${existing.profile} mode).`,
+        `${canonicalLibrary}@${targetVersion} is already installed and current (${existing.page_count} pages, ${existing.profile} mode).`,
         {
-          library: input.library,
+          library: canonicalLibrary,
           version: targetVersion,
           changed: false,
           installed: true,
@@ -786,11 +779,11 @@ export async function handleInstallDocs(deps: ServerDeps, input: InstallDocsInpu
   const actionLine = existing ? "Reinstalled" : "Installed";
 
   return structuredTextResult(
-    `${actionLine} ${input.library}@${targetVersion}\n` +
+    `${actionLine} ${canonicalLibrary}@${targetVersion}\n` +
     `${installLine}\n` +
     `  Indexed: ${outcome.indexedCount} pages for search${fallbackLine}`,
     {
-      library: input.library,
+      library: canonicalLibrary,
       version: targetVersion,
       changed: true,
       reinstall: Boolean(existing),
@@ -1164,7 +1157,7 @@ function createServer(deps: ServerDeps): McpServer {
       inputSchema: {
         library: z
           .string()
-          .describe("Library identifier in namespace/name format (e.g., 'vercel/nextjs')"),
+          .describe("Library query, alias, or namespace/name identifier (e.g., 'next', 'kamal', or 'vercel/nextjs')"),
         version: z.string().optional().describe("Version to install: exact version, 'stable', 'latest', or omit for default"),
       },
     },

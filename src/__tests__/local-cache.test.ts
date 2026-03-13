@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { LocalCache, type InstalledLibrary } from "../lib/local-cache.js";
+import type { PageRecord } from "../lib/types.js";
 
 describe("LocalCache", () => {
   let cacheDir: string;
@@ -40,6 +41,12 @@ describe("LocalCache", () => {
       expect(content).toBe("# Getting Started\n\nContent here.");
     });
 
+    it("saves and reads a nested page UID", () => {
+      cache.savePage("vercel", "nextjs", "15.1.0", "docs/guide/routing", "# Routing");
+      const content = cache.readPage("vercel", "nextjs", "15.1.0", "docs/guide/routing");
+      expect(content).toBe("# Routing");
+    });
+
     it("returns null for missing page", () => {
       expect(cache.readPage("vercel", "nextjs", "15.1.0", "nonexistent")).toBeNull();
     });
@@ -56,6 +63,26 @@ describe("LocalCache", () => {
       const uids = cache.listPageUids("vercel", "nextjs", "15.1.0");
       expect(uids.sort()).toEqual(["api-ref", "intro"]);
     });
+
+    it("counts nested page UIDs from page-index", () => {
+      const pageIndex: PageRecord[] = [{
+        page_uid: "docs/guide/routing",
+        bundle_path: "f00ba4.md",
+        path: "guide/routing.md",
+        title: "Routing",
+        url: "https://example.com/guide/routing",
+        checksum: "sha256:routing",
+        bytes: 64,
+        headings: ["Routing"],
+        updated_at: "2026-03-12T00:00:00Z",
+      }];
+
+      cache.savePageIndex("vercel", "nextjs", "15.1.0", pageIndex);
+      cache.savePage("vercel", "nextjs", "15.1.0", "docs/guide/routing", "# Routing");
+
+      expect(cache.countPages("vercel", "nextjs", "15.1.0")).toBe(1);
+      expect(cache.listPageUids("vercel", "nextjs", "15.1.0")).toEqual(["docs/guide/routing"]);
+    });
   });
 
   describe("page-index operations", () => {
@@ -63,6 +90,42 @@ describe("LocalCache", () => {
       const pageIndex = [{ page_uid: "intro", title: "Intro" }];
       cache.savePageIndex("vercel", "nextjs", "15.1.0", pageIndex);
       // Just verify it doesn't throw — read is done via filesystem
+    });
+
+    it("loads page-index records and resolves page metadata by page UID", () => {
+      const pageIndex: PageRecord[] = [{
+        page_uid: "pg_use_ref",
+        path: "reference/react/useRef.md",
+        title: "useRef",
+        url: "https://react.dev/reference/react/useRef",
+        checksum: "abc123",
+        bytes: 1234,
+        headings: ["useRef"],
+        updated_at: "2026-03-11T00:00:00Z",
+      }];
+
+      cache.savePageIndex("facebook", "react", "19.2.0", pageIndex);
+
+      expect(cache.loadPageIndex("facebook", "react", "19.2.0")).toEqual(pageIndex);
+      expect(cache.findPageByUid("facebook", "react", "19.2.0", "pg_use_ref")).toEqual(pageIndex[0]);
+    });
+
+    it("resolves page metadata by canonical doc path", () => {
+      const pageIndex: PageRecord[] = [{
+        page_uid: "pg_use_ref",
+        path: "reference/react/useRef.md",
+        title: "useRef",
+        url: "https://react.dev/reference/react/useRef",
+        checksum: "abc123",
+        bytes: 1234,
+        headings: ["useRef"],
+        updated_at: "2026-03-11T00:00:00Z",
+      }];
+
+      cache.savePageIndex("facebook", "react", "19.2.0", pageIndex);
+
+      expect(cache.findPageByPath("facebook", "react", "19.2.0", "reference/react/useRef.md")).toEqual(pageIndex[0]);
+      expect(cache.findPageByPath("facebook", "react", "19.2.0", "/reference/react/useRef")).toEqual(pageIndex[0]);
     });
   });
 
@@ -85,7 +148,6 @@ describe("LocalCache", () => {
       installed_at: "2026-03-09T12:00:00Z",
       manifest_checksum: "abc123",
       page_count: 42,
-      pinned: false,
     };
 
     it("starts with empty state", () => {

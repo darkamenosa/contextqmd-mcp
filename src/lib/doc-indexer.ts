@@ -11,15 +11,16 @@
  *   auto   — Smart routing: picks the best mode based on query characteristics
  */
 
+import { createHash } from "node:crypto";
 import {
   createStore,
-  type Store,
-  hashContent,
-  hybridQuery,
-  vectorSearchQuery,
+  extractSnippet,
   type HybridQueryResult,
-} from "@tobilu/qmd/dist/store.js";
-import type { LocalCache } from "./local-cache.js";
+  type InternalStore,
+  type QMDStore,
+  type SearchResult,
+} from "@tobilu/qmd";
+import { normalizeDocPath, type LocalCache } from "./local-cache.js";
 
 export interface IndexedPage {
   pageUid: string;
@@ -41,11 +42,16 @@ export interface DocSearchResult {
   pageUid: string;
   title: string;
   path: string;
+  docPath: string;
+  contentMd: string;
   score: number;
   snippet: string;
   library: string; // namespace/name
   version: string;
   searchMode: SearchMode; // which mode was actually used
+  lineStart: number | null;
+  lineEnd: number | null;
+  url?: string;
 }
 
 /**
@@ -110,22 +116,26 @@ export function classifyQuery(query: string): SearchMode {
 }
 
 export class DocIndexer {
-  private store: Store;
+  private storePromise: Promise<QMDStore>;
   private cache: LocalCache;
 
   constructor(dbPath: string, cache: LocalCache) {
-    this.store = createStore(dbPath);
+    this.storePromise = createStore({
+      dbPath,
+      config: { collections: {} },
+    });
     this.cache = cache;
   }
 
   /** Close the underlying QMD store */
-  close(): void {
-    this.store.close();
+  async close(): Promise<void> {
+    const store = await this.storePromise;
+    await store.close();
   }
 
   /** Get the QMD store (for advanced operations) */
-  getStore(): Store {
-    return this.store;
+  async getStore(): Promise<InternalStore> {
+    return (await this.storePromise).internal;
   }
 
   /**
@@ -153,36 +163,64 @@ export class DocIndexer {
     name: string,
     version: string,
   ): Promise<number> {
+    const store = await this.getStore();
     const collectionName = DocIndexer.collectionName(namespace, name, version);
     const pageUids = this.cache.listPageUids(namespace, name, version);
+    const desiredPaths = new Set<string>();
 
     let indexed = 0;
     for (const pageUid of pageUids) {
       const content = this.cache.readPage(namespace, name, version, pageUid);
       if (!content) continue;
 
+      const page = this.cache.findPageByUid(namespace, name, version, pageUid);
+      const docPath = page ? normalizeDocPath(page.path) : `${pageUid}.md`;
+      desiredPaths.add(docPath);
+      const title = page?.title ?? extractTitle(content, pageUid);
       const hash = await hashContent(content);
       const now = new Date().toISOString();
+      const legacyPath = `${pageUid}.md`;
 
       // Check if already indexed with same hash
-      const existing = this.store.findActiveDocument(collectionName, `${pageUid}.md`);
+      const existing = store.findActiveDocument(collectionName, docPath);
+      const legacyExisting = docPath === legacyPath
+        ? existing
+        : store.findActiveDocument(collectionName, legacyPath);
+
       if (existing && existing.hash === hash) continue;
+      if (!existing && legacyExisting && legacyExisting.hash === hash) {
+        store.insertDocument(collectionName, docPath, title, legacyExisting.hash, now, now);
+        if (legacyPath !== docPath) {
+          store.deactivateDocument(collectionName, legacyPath);
+        }
+        indexed++;
+        continue;
+      }
 
       // Insert or update
-      this.store.insertContent(hash, content, now);
+      store.insertContent(hash, content, now);
       if (existing) {
-        this.store.updateDocument(existing.id, extractTitle(content, pageUid), hash, now);
+        store.updateDocument(existing.id, title, hash, now);
       } else {
-        this.store.insertDocument(
+        store.insertDocument(
           collectionName,
-          `${pageUid}.md`,
-          extractTitle(content, pageUid),
+          docPath,
+          title,
           hash,
           now,
           now,
         );
+        if (legacyExisting && legacyPath !== docPath) {
+          store.deactivateDocument(collectionName, legacyPath);
+        }
       }
       indexed++;
+    }
+
+    for (const activePath of store.getActiveDocumentPaths(collectionName)) {
+      if (!desiredPaths.has(activePath)) {
+        store.deactivateDocument(collectionName, activePath);
+      }
     }
 
     return indexed;
@@ -198,36 +236,55 @@ export class DocIndexer {
     pageUid: string,
     content: string,
   ): Promise<void> {
+    const store = await this.getStore();
     const collName = DocIndexer.collectionName(namespace, name, version);
+    const page = this.cache.findPageByUid(namespace, name, version, pageUid);
+    const docPath = page ? normalizeDocPath(page.path) : `${pageUid}.md`;
+    const title = page?.title ?? extractTitle(content, pageUid);
     const hash = await hashContent(content);
     const now = new Date().toISOString();
+    const legacyPath = `${pageUid}.md`;
 
-    const existing = this.store.findActiveDocument(collName, `${pageUid}.md`);
+    const existing = store.findActiveDocument(collName, docPath);
+    const legacyExisting = docPath === legacyPath
+      ? existing
+      : store.findActiveDocument(collName, legacyPath);
     if (existing && existing.hash === hash) return;
+    if (!existing && legacyExisting && legacyExisting.hash === hash) {
+      store.insertDocument(collName, docPath, title, legacyExisting.hash, now, now);
+      if (legacyPath !== docPath) {
+        store.deactivateDocument(collName, legacyPath);
+      }
+      return;
+    }
 
-    this.store.insertContent(hash, content, now);
+    store.insertContent(hash, content, now);
     if (existing) {
-      this.store.updateDocument(existing.id, extractTitle(content, pageUid), hash, now);
+      store.updateDocument(existing.id, title, hash, now);
     } else {
-      this.store.insertDocument(
+      store.insertDocument(
         collName,
-        `${pageUid}.md`,
-        extractTitle(content, pageUid),
+        docPath,
+        title,
         hash,
         now,
         now,
       );
+      if (legacyExisting && legacyPath !== docPath) {
+        store.deactivateDocument(collName, legacyPath);
+      }
     }
   }
 
   /**
    * Remove all indexed documents for a library version.
    */
-  removeLibraryVersion(namespace: string, name: string, version: string): void {
+  async removeLibraryVersion(namespace: string, name: string, version: string): Promise<void> {
+    const store = await this.getStore();
     const collectionName = DocIndexer.collectionName(namespace, name, version);
-    const paths = this.store.getActiveDocumentPaths(collectionName);
+    const paths = store.getActiveDocumentPaths(collectionName);
     for (const p of paths) {
-      this.store.deactivateDocument(collectionName, p);
+      store.deactivateDocument(collectionName, p);
     }
   }
 
@@ -248,21 +305,22 @@ export class DocIndexer {
 
     const requestedMode = options.mode ?? "auto";
     const effectiveMode = requestedMode === "auto" ? classifyQuery(query) : requestedMode;
+    const searchMode = !options.library && effectiveMode !== "fts" ? "fts" : effectiveMode;
 
     // Vector and hybrid modes require embeddings to be present.
     // If they're not available, fall back to FTS gracefully.
-    if (effectiveMode === "vector") {
+    if (searchMode === "vector") {
       const results = await this.searchVector(query, options);
       if (results.length > 0) return results;
       // Fallback to FTS if vector returned nothing (no embeddings indexed)
-      return this.searchFTS(query, options).map(r => ({ ...r, searchMode: "fts" as SearchMode }));
+      return (await this.searchFTS(query, options)).map(r => ({ ...r, searchMode: "fts" as SearchMode }));
     }
 
-    if (effectiveMode === "hybrid") {
+    if (searchMode === "hybrid") {
       const results = await this.searchHybrid(query, options);
       if (results.length > 0) return results;
       // Fallback to FTS if hybrid returned nothing
-      return this.searchFTS(query, options).map(r => ({ ...r, searchMode: "fts" as SearchMode }));
+      return (await this.searchFTS(query, options)).map(r => ({ ...r, searchMode: "fts" as SearchMode }));
     }
 
     return this.searchFTS(query, options);
@@ -271,7 +329,8 @@ export class DocIndexer {
   /**
    * Search across installed docs using FTS (BM25).
    */
-  searchFTS(query: string, options: SearchOptions = {}): DocSearchResult[] {
+  async searchFTS(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
+    const store = await this.getStore();
     const limit = options.maxResults ?? 10;
 
     // If both library and version specified, filter at QMD level
@@ -282,8 +341,8 @@ export class DocIndexer {
     }
     // Otherwise filter post-search in mapResults
 
-    const results = this.store.searchFTS(query, limit * 2, collectionFilter);
-    return this.mapAnyResults(results, options, "fts").slice(0, limit);
+    const results = store.searchFTS(query, limit * 2, collectionFilter);
+    return this.mapAnyResults(results, query, options, "fts").slice(0, limit);
   }
 
   /**
@@ -291,6 +350,7 @@ export class DocIndexer {
    * Returns empty array if no embeddings are indexed.
    */
   async searchVector(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
+    const store = await this.storePromise;
     const limit = options.maxResults ?? 10;
 
     let collectionFilter: string | undefined;
@@ -301,13 +361,13 @@ export class DocIndexer {
 
     try {
       const results = await withTimeout(
-        vectorSearchQuery(this.store, query, {
+        store.searchVector(query, {
           collection: collectionFilter,
           limit: limit * 2,
         }),
         10_000,
       );
-      return this.mapAnyResults(results, options, "vector").slice(0, limit);
+      return this.mapAnyResults(results, query, options, "vector").slice(0, limit);
     } catch {
       // Vector search failed, timed out, or no embeddings — return empty
       return [];
@@ -320,6 +380,7 @@ export class DocIndexer {
    * Includes a timeout to prevent hanging when LLM model loading is slow.
    */
   async searchHybrid(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
+    const store = await this.storePromise;
     const limit = options.maxResults ?? 10;
 
     let collectionFilter: string | undefined;
@@ -331,14 +392,15 @@ export class DocIndexer {
     try {
       // Timeout hybrid query at 10s — LLM model loading can hang
       const results = await withTimeout(
-        hybridQuery(this.store, query, {
+        store.search({
+          query,
           collection: collectionFilter,
           limit,
         }),
         10_000,
       );
-      return this.mapAnyResults<HybridQueryResult>(results, options, "hybrid",
-        (r) => r.bestChunk?.slice(0, 500) ?? r.body?.slice(0, 500) ?? "",
+      return this.mapAnyResults<HybridQueryResult>(results, query, options, "hybrid",
+        (r) => this.extractSnippetInfo(r.body ?? "", query, r.bestChunkPos),
       ).slice(0, limit);
     } catch {
       // Hybrid search failed or timed out — return empty (caller will fall back to FTS)
@@ -356,9 +418,10 @@ export class DocIndexer {
    */
   private mapAnyResults<T extends { displayPath: string; title: string; score: number; body?: string }>(
     results: T[],
+    query: string,
     options: SearchOptions,
     mode: SearchMode,
-    snippetFn: (r: T) => string = (r) => r.body?.slice(0, 500) ?? "",
+    snippetFn: (r: T) => SearchSnippet = (r) => this.extractSnippetInfo(r.body ?? "", query, (r as { chunkPos?: number }).chunkPos),
   ): DocSearchResult[] {
     return results
       .map(r => {
@@ -369,22 +432,34 @@ export class DocIndexer {
         const parsed = DocIndexer.parseCollectionName(collName);
         const library = parsed ? `${parsed.namespace}/${parsed.name}` : collName;
 
-        // Strip collection prefix from displayPath to get pageUid
-        let pageUid = r.displayPath;
-        if (pageUid.startsWith(collName + "/")) {
-          pageUid = pageUid.slice(collName.length + 1);
+        let docPath = r.displayPath;
+        if (docPath.startsWith(collName + "/")) {
+          docPath = docPath.slice(collName.length + 1);
         }
-        pageUid = pageUid.replace(/\.md$/, "");
+        docPath = normalizeDocPath(docPath);
+        const page = parsed
+          ? this.cache.findPageByPath(parsed.namespace, parsed.name, parsed.version, docPath)
+          : null;
+        const pageUid = page?.page_uid ?? docPath.replace(/\.md$/, "");
+        const contentMd = parsed
+          ? (this.cache.readPage(parsed.namespace, parsed.name, parsed.version, pageUid) ?? r.body ?? "")
+          : (r.body ?? "");
+        const snippet = snippetFn(r);
 
         return {
           pageUid,
-          title: r.title,
+          title: page?.title ?? r.title,
           path: r.displayPath,
+          docPath,
+          contentMd,
           score: r.score,
-          snippet: snippetFn(r),
+          snippet: snippet.snippet,
           library,
           searchMode: mode,
           _version: parsed?.version,
+          lineStart: snippet.lineStart,
+          lineEnd: snippet.lineEnd,
+          url: page?.url,
         };
       })
       .filter(r => {
@@ -396,6 +471,33 @@ export class DocIndexer {
       })
       .map(({ _version, ...rest }) => ({ ...rest, version: _version ?? "unknown" }));
   }
+
+  private extractSnippetInfo(body: string, query: string, chunkPos?: number): SearchSnippet {
+    if (!body.trim()) {
+      return { snippet: "", lineStart: null, lineEnd: null };
+    }
+
+    const { snippet, line, snippetLines } = extractSnippet(body, query, 500, chunkPos);
+    if (!line || line < 1) {
+      return { snippet, lineStart: null, lineEnd: null };
+    }
+
+    return {
+      snippet,
+      lineStart: line,
+      lineEnd: line + Math.max(snippetLines - 1, 0),
+    };
+  }
+}
+
+type SearchSnippet = {
+  snippet: string;
+  lineStart: number | null;
+  lineEnd: number | null;
+};
+
+async function hashContent(content: string): Promise<string> {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 /** Race a promise against a timeout. Rejects with an error if timeout fires first. */

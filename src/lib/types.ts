@@ -7,6 +7,18 @@ export interface Library {
   aliases: string[];
   homepage_url: string;
   default_version: string;
+  source_type?: string | null;
+  license_status?: "verified" | "unclear" | "custom" | null;
+  version_count?: number;
+}
+
+export interface LibrarySearchResult extends Library {
+  version_count?: number;
+  stats?: {
+    page_count?: number;
+    total_bytes?: number;
+    last_generated_at?: string;
+  };
 }
 
 export interface Version {
@@ -18,6 +30,7 @@ export interface Version {
 
 export interface PageRecord {
   page_uid: string;
+  bundle_path?: string;
   path: string;
   title: string;
   url: string;
@@ -25,6 +38,18 @@ export interface PageRecord {
   bytes: number;
   headings: string[];
   updated_at: string;
+}
+
+export interface ManifestBundle {
+  format: string;
+  url: string;
+  sha256: string;
+  size_bytes?: number;
+}
+
+export interface ManifestProfile {
+  selector_version?: string;
+  bundle?: ManifestBundle;
 }
 
 export interface Manifest {
@@ -42,13 +67,7 @@ export interface Manifest {
     etag: string | null;
   } | null;
   page_index: { url: string; sha256: string | null };
-  profiles: Record<
-    string,
-    {
-      selector_version?: string;
-      bundle: { format: string; url: string; sha256: string };
-    }
-  >;
+  profiles: Record<string, ManifestProfile>;
   source_policy: {
     license_name: string;
     license_status: "verified" | "unclear" | "custom";
@@ -95,4 +114,5 @@ export interface ResolveRequest {
 export interface ResolveResponse {
   library: Library;
   version: Version;
+  manifest_url?: string;
 }

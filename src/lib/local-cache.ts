@@ -9,8 +9,19 @@
  *   state/installed.json
  */
 
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import {
+  Dirent,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import type { PageRecord } from "./types.js";
 
 export interface InstalledLibrary {
   namespace: string;
@@ -20,11 +31,25 @@ export interface InstalledLibrary {
   installed_at: string;
   manifest_checksum: string | null;
   page_count: number;
-  pinned: boolean;
+  pinned?: boolean;
+  index_schema_version?: number;
 }
 
 export interface InstalledState {
   libraries: InstalledLibrary[];
+}
+
+export function normalizeDocPath(docPath: string): string {
+  const trimmed = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  return trimmed.endsWith(".md") ? trimmed : `${trimmed}.md`;
+}
+
+function normalizePageUid(pageUid: string): string {
+  const trimmed = pageUid.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!trimmed || trimmed.split("/").includes("..")) {
+    throw new Error(`Unsafe page_uid: ${pageUid}`);
+  }
+  return trimmed;
 }
 
 export class LocalCache {
@@ -34,6 +59,7 @@ export class LocalCache {
     this.cacheDir = cacheDir;
     mkdirSync(join(this.cacheDir, "docs"), { recursive: true });
     mkdirSync(join(this.cacheDir, "state"), { recursive: true });
+    mkdirSync(join(this.cacheDir, "tmp"), { recursive: true });
   }
 
   /** Get the docs directory for a specific library version */
@@ -60,16 +86,36 @@ export class LocalCache {
     writeFileSync(join(dir, "page-index.json"), JSON.stringify(pageIndex, null, 2));
   }
 
+  /** Load page-index JSON for a library version */
+  loadPageIndex(namespace: string, name: string, version: string): PageRecord[] {
+    const path = join(this.docsDir(namespace, name, version), "page-index.json");
+    if (!existsSync(path)) return [];
+    return JSON.parse(readFileSync(path, "utf-8")) as PageRecord[];
+  }
+
+  /** Resolve a page metadata record by page UID */
+  findPageByUid(namespace: string, name: string, version: string, pageUid: string): PageRecord | null {
+    return this.loadPageIndex(namespace, name, version)
+      .find(page => page.page_uid === pageUid) ?? null;
+  }
+
+  /** Resolve a page metadata record by canonical doc path */
+  findPageByPath(namespace: string, name: string, version: string, docPath: string): PageRecord | null {
+    const normalized = normalizeDocPath(docPath);
+    return this.loadPageIndex(namespace, name, version)
+      .find(page => normalizeDocPath(page.path) === normalized) ?? null;
+  }
+
   /** Save a page as markdown file */
   savePage(namespace: string, name: string, version: string, pageUid: string, content: string): void {
-    const dir = this.pagesDir(namespace, name, version);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `${pageUid}.md`), content);
+    const path = this.pagePath(namespace, name, version, pageUid);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
   }
 
   /** Read a page from local cache */
   readPage(namespace: string, name: string, version: string, pageUid: string): string | null {
-    const path = join(this.pagesDir(namespace, name, version), `${pageUid}.md`);
+    const path = this.pagePath(namespace, name, version, pageUid);
     if (!existsSync(path)) return null;
     return readFileSync(path, "utf-8");
   }
@@ -81,25 +127,87 @@ export class LocalCache {
 
   /** Count locally stored pages for a version */
   countPages(namespace: string, name: string, version: string): number {
+    const pageIndex = this.loadPageIndex(namespace, name, version);
+    if (pageIndex.length > 0) return pageIndex.length;
+
     const dir = this.pagesDir(namespace, name, version);
     if (!existsSync(dir)) return 0;
-    return readdirSync(dir).filter(f => f.endsWith(".md")).length;
+    return this.collectMarkdownFiles(dir).length;
   }
 
   /** List all page UIDs stored locally */
   listPageUids(namespace: string, name: string, version: string): string[] {
+    const pageIndex = this.loadPageIndex(namespace, name, version);
+    if (pageIndex.length > 0) return pageIndex.map(page => page.page_uid);
+
     const dir = this.pagesDir(namespace, name, version);
     if (!existsSync(dir)) return [];
-    return readdirSync(dir)
-      .filter(f => f.endsWith(".md"))
-      .map(f => f.replace(/\.md$/, ""));
+    return this.collectMarkdownFiles(dir).map(file => file.replace(/\.md$/, ""));
   }
 
   /** Remove a library version from local cache */
   removeVersion(namespace: string, name: string, version: string): void {
     const dir = this.docsDir(namespace, name, version);
     if (existsSync(dir)) {
-      rmSync(dir, { recursive: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  createTempInstallDir(namespace: string, name: string, version: string): string {
+    const prefix = `${namespace}-${name}-${version}-`.replace(/[^a-zA-Z0-9._-]/g, "-");
+    return mkdtempSync(join(this.cacheDir, "tmp", prefix));
+  }
+
+  createTempArchivePath(namespace: string, name: string, version: string, filename = "bundle.tar.gz"): string {
+    const dir = this.createTempInstallDir(namespace, name, version);
+    return join(dir, filename);
+  }
+
+  commitStagedVersion(namespace: string, name: string, version: string, stagedDocsDir: string): void {
+    const finalDir = this.docsDir(namespace, name, version);
+    const parentDir = join(this.cacheDir, "docs", namespace, name);
+    mkdirSync(parentDir, { recursive: true });
+
+    if (existsSync(finalDir)) {
+      rmSync(finalDir, { recursive: true, force: true });
+    }
+
+    renameSync(stagedDocsDir, finalDir);
+  }
+
+  backupVersion(namespace: string, name: string, version: string): string | null {
+    const finalDir = this.docsDir(namespace, name, version);
+    if (!existsSync(finalDir)) return null;
+
+    const backupRoot = this.createTempInstallDir(namespace, name, version);
+    const backupDir = join(backupRoot, "docs");
+    renameSync(finalDir, backupDir);
+    return backupDir;
+  }
+
+  restoreVersionFromBackup(namespace: string, name: string, version: string, backupDir: string): void {
+    const finalDir = this.docsDir(namespace, name, version);
+    const parentDir = join(this.cacheDir, "docs", namespace, name);
+
+    if (existsSync(finalDir)) {
+      rmSync(finalDir, { recursive: true, force: true });
+    }
+
+    if (existsSync(backupDir)) {
+      mkdirSync(parentDir, { recursive: true });
+      renameSync(backupDir, finalDir);
+    }
+
+    this.cleanupTempPath(dirname(backupDir));
+  }
+
+  discardBackup(backupDir: string): void {
+    this.cleanupTempPath(dirname(backupDir));
+  }
+
+  cleanupTempPath(path: string): void {
+    if (existsSync(path)) {
+      rmSync(path, { recursive: true, force: true });
     }
   }
 
@@ -146,5 +254,29 @@ export class LocalCache {
 
   listInstalled(): InstalledLibrary[] {
     return this.loadState().libraries;
+  }
+
+  private pagePath(namespace: string, name: string, version: string, pageUid: string): string {
+    return join(this.pagesDir(namespace, name, version), `${normalizePageUid(pageUid)}.md`);
+  }
+
+  private collectMarkdownFiles(path: string, relativeDir = ""): string[] {
+    const files: string[] = [];
+
+    for (const entry of readdirSync(path, { withFileTypes: true }) as Dirent[]) {
+      const nextRelative = relativeDir ? join(relativeDir, entry.name) : entry.name;
+      const nextPath = join(path, entry.name);
+
+      if (entry.isDirectory()) {
+        files.push(...this.collectMarkdownFiles(nextPath, nextRelative));
+        continue;
+      }
+
+      if (entry.isFile() && entry.name.endsWith(".md")) {
+        files.push(nextRelative.replace(/\\/g, "/"));
+      }
+    }
+
+    return files;
   }
 }

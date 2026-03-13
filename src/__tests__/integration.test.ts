@@ -48,7 +48,7 @@ describe.skipIf(skipIntegration)("Integration: MCP ↔ Registry", () => {
       expect(result.data.name).toBe("ContextQMD Registry");
       expect(result.data.version).toBeDefined();
       expect(result.data.features).toBeDefined();
-      expect(result.data.features.bundle_download).toBe(false); // not yet implemented
+      expect(result.data.features.bundle_download).toBe(true);
       expect(result.data.features.cursor_pagination).toBe(true);
     });
   });
@@ -65,6 +65,8 @@ describe.skipIf(skipIntegration)("Integration: MCP ↔ Registry", () => {
       expect(lib.name).toBe("nextjs");
       expect(lib.display_name).toBe("Next.js");
       expect(lib.aliases).toContain("nextjs");
+      expect(lib.source_type).toBeDefined();
+      expect(lib.license_status).toBe("verified");
     });
 
     it("GET /libraries/:namespace/:name returns library detail", async () => {
@@ -73,6 +75,8 @@ describe.skipIf(skipIntegration)("Integration: MCP ↔ Registry", () => {
       expect(result.data.namespace).toBe("vercel");
       expect(result.data.name).toBe("nextjs");
       expect(result.data.default_version).toBe("16.1.6");
+      expect(result.data.source_type).toBeDefined();
+      expect(result.data.license_status).toBe("verified");
     });
 
     it("POST /resolve resolves by name", async () => {
@@ -142,7 +146,17 @@ describe.skipIf(skipIntegration)("Integration: MCP ↔ Registry", () => {
       expect(data.version).toBe("16.1.6");
       expect(data.doc_count).toBeDefined();
       expect(data.page_index).toBeDefined();
+      expect(result.data.profiles.full?.bundle).toBeDefined();
       expect(data.provenance).toBeDefined();
+    });
+
+    it("GET /bundles/:profile downloads the full bundle", async () => {
+      const manifest = await client.getManifest("vercel", "nextjs", "16.1.6");
+      const fullBundle = manifest.data.profiles.full?.bundle;
+      expect(fullBundle).toBeDefined();
+
+      const bundleBytes = await client.downloadBundle(fullBundle!.url);
+      expect(bundleBytes.byteLength).toBeGreaterThan(0);
     });
 
     it("GET /page-index lists pages", async () => {

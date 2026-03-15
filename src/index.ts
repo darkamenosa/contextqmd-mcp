@@ -20,6 +20,7 @@ const DOC_INDEX_SCHEMA_VERSION = 2;
 const DEFAULT_EXCERPT_MAX_LINES = 60;
 const DEFAULT_EXPAND_BEFORE = 30;
 const DEFAULT_EXPAND_AFTER = 60;
+const LOCAL_DOCS_VERSION = "local";
 
 export interface ServerDeps {
   registryClient: RegistryClient;
@@ -52,6 +53,14 @@ function errorResult(text: string, code: string, details: Record<string, unknown
       },
     },
   };
+}
+
+function isLocalDocsInstall(installed: { source_kind?: string; version: string }): boolean {
+  return installed.source_kind === "local" || installed.version === LOCAL_DOCS_VERSION;
+}
+
+function isRegistryInstall(installed: { source_kind?: string; version: string }): boolean {
+  return !isLocalDocsInstall(installed);
 }
 
 type SearchDocsInput = {
@@ -396,6 +405,7 @@ async function ensureCurrentIndexSchema(
     if ((lib.index_schema_version ?? 0) >= DOC_INDEX_SCHEMA_VERSION) continue;
     await indexer.removeLibraryVersion(lib.slug, lib.version);
     await indexer.indexLibraryVersion(lib.slug, lib.version);
+    await indexer.embed();
     cache.addInstalled({
       ...lib,
       page_count: cache.countPages(lib.slug, lib.version),
@@ -630,6 +640,7 @@ async function installResolvedVersion(
     }
 
     const indexedCount = await indexer.indexLibraryVersion(slug, version);
+    await indexer.embed();
     if (backupDir) {
       cache.discardBackup(backupDir);
     }
@@ -750,6 +761,8 @@ export async function handleInstallDocs(deps: ServerDeps, input: InstallDocsInpu
     manifest_checksum: outcome.manifestChecksum,
     page_count: outcome.pageCount,
     index_schema_version: DOC_INDEX_SCHEMA_VERSION,
+    source_kind: "registry",
+    display_name: resolved.data.library.display_name,
   });
 
   const installLine =
@@ -929,10 +942,13 @@ export function handleListInstalledDocs(deps: ServerDeps): ToolResult {
     page_count: lib.page_count,
     installed_at: lib.installed_at,
     manifest_checksum: lib.manifest_checksum,
+    source_kind: lib.source_kind ?? "registry",
+    ...(lib.source_paths ? { source_paths: lib.source_paths } : {}),
+    ...(lib.display_name ? { display_name: lib.display_name } : {}),
   }));
 
   const lines = results.map(result =>
-    `- ${result.library}@${result.version} (${result.profile}, ${result.page_count} pages)`,
+    `- ${result.library}@${result.version} (${result.source_kind === "local" ? "local" : result.profile}, ${result.page_count} pages)`,
   );
 
   return structuredTextResult(`Installed documentation packages:\n\n${lines.join("\n")}`, {
@@ -955,16 +971,23 @@ export async function handleUpdateDocs(
     );
   }
 
-  const targets = library
+  const filtered = library
     ? installed.filter(l => l.slug === library)
     : installed;
+  const skippedLocal = filtered.filter(isLocalDocsInstall).map(lib => lib.slug);
+  const targets = filtered.filter(isRegistryInstall);
 
   if (targets.length === 0) {
     return structuredTextResult(
-      library
-        ? `${library} is not installed. Use install_docs first.`
-        : "No documentation packages installed.",
-      { results: [] },
+      skippedLocal.length > 0
+        ? "No registry documentation packages installed."
+        : library
+          ? `${library} is not installed. Use install_docs first.`
+          : "No documentation packages installed.",
+      {
+        results: [],
+        ...(skippedLocal.length > 0 ? { skipped_local: skippedLocal } : {}),
+      },
     );
   }
 

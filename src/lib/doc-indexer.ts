@@ -15,10 +15,10 @@ import { createHash } from "node:crypto";
 import {
   createStore,
   extractSnippet,
+  type EmbedProgress,
   type HybridQueryResult,
   type InternalStore,
   type QMDStore,
-  type SearchResult,
 } from "@tobilu/qmd";
 import { normalizeDocPath, type LocalCache } from "./local-cache.js";
 
@@ -186,7 +186,12 @@ export class DocIndexer {
         ? existing
         : store.findActiveDocument(collectionName, legacyPath);
 
-      if (existing && existing.hash === hash) continue;
+      if (existing && existing.hash === hash) {
+        if (existing.title !== title) {
+          store.updateDocumentTitle(existing.id, title, now);
+        }
+        continue;
+      }
       if (!existing && legacyExisting && legacyExisting.hash === hash) {
         store.insertDocument(collectionName, docPath, title, legacyExisting.hash, now, now);
         if (legacyPath !== docPath) {
@@ -247,7 +252,12 @@ export class DocIndexer {
     const legacyExisting = docPath === legacyPath
       ? existing
       : store.findActiveDocument(collName, legacyPath);
-    if (existing && existing.hash === hash) return;
+    if (existing && existing.hash === hash) {
+      if (existing.title !== title) {
+        store.updateDocumentTitle(existing.id, title, now);
+      }
+      return;
+    }
     if (!existing && legacyExisting && legacyExisting.hash === hash) {
       store.insertDocument(collName, docPath, title, legacyExisting.hash, now, now);
       if (legacyPath !== docPath) {
@@ -274,6 +284,13 @@ export class DocIndexer {
     }
   }
 
+  /** Generate vector embeddings for documents that need them */
+  async embed(onProgress?: (info: EmbedProgress) => void): Promise<{ chunksEmbedded: number }> {
+    const store = await this.storePromise;
+    const result = await store.embed({ onProgress });
+    return { chunksEmbedded: result.chunksEmbedded };
+  }
+
   /**
    * Remove all indexed documents for a library version.
    */
@@ -286,14 +303,24 @@ export class DocIndexer {
     }
   }
 
+  /** Resolve collection names matching a library slug from installed state */
+  private resolveCollections(options: SearchOptions): string[] {
+    if (options.library && options.version) {
+      return [DocIndexer.collectionName(options.library, options.version)];
+    }
+    if (options.library) {
+      return this.cache.listInstalled()
+        .filter(lib => lib.slug === options.library)
+        .map(lib => DocIndexer.collectionName(lib.slug, lib.version));
+    }
+    return [];
+  }
+
   /**
    * Unified search dispatcher. Routes to the appropriate search backend
    * based on the mode (or auto-selects).
    */
   async search(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
-    // Warn when version is specified without library — the QMD-level collection
-    // filter requires both, so version filtering falls back to post-query filtering
-    // which is less efficient (fetches more results then discards).
     if (options.version && !options.library) {
       console.warn(
         `[contextqmd] version filter "${options.version}" specified without library — ` +
@@ -303,21 +330,16 @@ export class DocIndexer {
 
     const requestedMode = options.mode ?? "auto";
     const effectiveMode = requestedMode === "auto" ? classifyQuery(query) : requestedMode;
-    const searchMode = !options.library && effectiveMode !== "fts" ? "fts" : effectiveMode;
 
-    // Vector and hybrid modes require embeddings to be present.
-    // If they're not available, fall back to FTS gracefully.
-    if (searchMode === "vector") {
+    if (effectiveMode === "vector") {
       const results = await this.searchVector(query, options);
       if (results.length > 0) return results;
-      // Fallback to FTS if vector returned nothing (no embeddings indexed)
       return (await this.searchFTS(query, options)).map(r => ({ ...r, searchMode: "fts" as SearchMode }));
     }
 
-    if (searchMode === "hybrid") {
+    if (effectiveMode === "hybrid") {
       const results = await this.searchHybrid(query, options);
       if (results.length > 0) return results;
-      // Fallback to FTS if hybrid returned nothing
       return (await this.searchFTS(query, options)).map(r => ({ ...r, searchMode: "fts" as SearchMode }));
     }
 
@@ -330,13 +352,8 @@ export class DocIndexer {
   async searchFTS(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
     const store = await this.getStore();
     const limit = options.maxResults ?? 10;
-
-    // If both library and version specified, filter at QMD level
-    let collectionFilter: string | undefined;
-    if (options.library && options.version) {
-      collectionFilter = DocIndexer.collectionName(options.library, options.version);
-    }
-    // Otherwise filter post-search in mapResults
+    const collections = this.resolveCollections(options);
+    const collectionFilter = collections.length === 1 ? collections[0] : undefined;
 
     const results = store.searchFTS(query, limit * 2, collectionFilter);
     return this.mapAnyResults(results, query, options, "fts").slice(0, limit);
@@ -349,11 +366,8 @@ export class DocIndexer {
   async searchVector(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
     const store = await this.storePromise;
     const limit = options.maxResults ?? 10;
-
-    let collectionFilter: string | undefined;
-    if (options.library && options.version) {
-      collectionFilter = DocIndexer.collectionName(options.library, options.version);
-    }
+    const collections = this.resolveCollections(options);
+    const collectionFilter = collections.length === 1 ? collections[0] : undefined;
 
     try {
       const results = await withTimeout(
@@ -361,11 +375,11 @@ export class DocIndexer {
           collection: collectionFilter,
           limit: limit * 2,
         }),
-        10_000,
+        30_000,
       );
       return this.mapAnyResults(results, query, options, "vector").slice(0, limit);
-    } catch {
-      // Vector search failed, timed out, or no embeddings — return empty
+    } catch (error) {
+      console.warn(`[contextqmd] vector search failed, falling back to FTS: ${(error as Error).message}`);
       return [];
     }
   }
@@ -373,43 +387,36 @@ export class DocIndexer {
   /**
    * Search using QMD hybrid query (BM25 + vector + expansion + reranking).
    * Falls back gracefully if LLM/embeddings are not available.
-   * Includes a timeout to prevent hanging when LLM model loading is slow.
    */
   async searchHybrid(query: string, options: SearchOptions = {}): Promise<DocSearchResult[]> {
     const store = await this.storePromise;
     const limit = options.maxResults ?? 10;
-
-    let collectionFilter: string | undefined;
-    if (options.library && options.version) {
-      collectionFilter = DocIndexer.collectionName(options.library, options.version);
-    }
+    const collections = this.resolveCollections(options);
 
     try {
-      // Timeout hybrid query at 10s — LLM model loading can hang
       const results = await withTimeout(
         store.search({
           query,
-          collection: collectionFilter,
+          ...(collections.length === 1
+            ? { collection: collections[0] }
+            : collections.length > 1
+              ? { collections }
+              : {}),
           limit,
         }),
-        10_000,
+        60_000,
       );
       return this.mapAnyResults<HybridQueryResult>(results, query, options, "hybrid",
         (r) => this.extractSnippetInfo(r.body ?? "", query, r.bestChunkPos),
       ).slice(0, limit);
-    } catch {
-      // Hybrid search failed or timed out — return empty (caller will fall back to FTS)
+    } catch (error) {
+      console.warn(`[contextqmd] hybrid search failed, falling back to FTS: ${(error as Error).message}`);
       return [];
     }
   }
 
   /**
    * Shared mapper: convert any QMD result type to DocSearchResult[].
-   *
-   * Extracts the collection name from `collectionName` (FTS results) or by
-   * parsing the first segment of `displayPath` (vector/hybrid results).
-   * Applies library and version post-filters, and extracts a snippet using
-   * the `snippetFn` callback for mode-specific snippet logic.
    */
   private mapAnyResults<T extends { displayPath: string; title: string; score: number; body?: string }>(
     results: T[],
@@ -420,8 +427,6 @@ export class DocIndexer {
   ): DocSearchResult[] {
     return results
       .map(r => {
-        // Prefer collectionName directly (available on FTS SearchResult);
-        // fall back to parsing the first segment of displayPath (vector/hybrid).
         const collName = (r as { collectionName?: string }).collectionName
           ?? r.displayPath.split("/")[0];
         const parsed = DocIndexer.parseCollectionName(collName);
@@ -454,9 +459,7 @@ export class DocIndexer {
         };
       })
       .filter(r => {
-        // Library filter
         if (options.library && r.library !== options.library) return false;
-        // Version filter (works with or without library filter)
         if (options.version && r._version !== options.version) return false;
         return true;
       })

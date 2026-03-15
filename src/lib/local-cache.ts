@@ -23,6 +23,24 @@ import {
 import { dirname, join } from "node:path";
 import type { PageRecord } from "./types.js";
 
+const GENERIC_SOURCE_NAMES = new Set([
+  "api",
+  "book",
+  "doc",
+  "docs",
+  "documentation",
+  "guide",
+  "guides",
+  "handbook",
+  "manual",
+  "manuals",
+  "reference",
+  "references",
+  "site",
+  "website",
+  "wiki",
+]);
+
 export interface InstalledLibrary {
   slug: string;
   version: string;
@@ -30,13 +48,30 @@ export interface InstalledLibrary {
   installed_at: string;
   manifest_checksum: string | null;
   page_count: number;
+  source_kind?: "registry" | "local";
+  source_paths?: string[];
+  display_name?: string;
   pinned?: boolean;
   index_schema_version?: number;
+  legacy_namespace?: string;
+  legacy_name?: string;
 }
 
 export interface InstalledState {
   libraries: InstalledLibrary[];
 }
+
+type LegacyInstalledLibrary = {
+  namespace: string;
+  name: string;
+  version: string;
+  profile: "slim" | "full";
+  installed_at: string;
+  manifest_checksum: string | null;
+  page_count: number;
+  pinned?: boolean;
+  index_schema_version?: number;
+};
 
 export function normalizeDocPath(docPath: string): string {
   const trimmed = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
@@ -87,7 +122,7 @@ export class LocalCache {
 
   /** Load page-index JSON for a library version */
   loadPageIndex(slug: string, version: string): PageRecord[] {
-    const path = join(this.docsDir(slug, version), "page-index.json");
+    const path = join(this.resolveDocsDir(slug, version), "page-index.json");
     if (!existsSync(path)) return [];
     return JSON.parse(readFileSync(path, "utf-8")) as PageRecord[];
   }
@@ -114,14 +149,14 @@ export class LocalCache {
 
   /** Read a page from local cache */
   readPage(slug: string, version: string, pageUid: string): string | null {
-    const path = this.pagePath(slug, version, pageUid);
+    const path = this.pagePath(slug, version, pageUid, { existing: true });
     if (!existsSync(path)) return null;
     return readFileSync(path, "utf-8");
   }
 
   /** Check if a library version is installed (has manifest) */
   hasManifest(slug: string, version: string): boolean {
-    return existsSync(join(this.docsDir(slug, version), "manifest.json"));
+    return existsSync(join(this.resolveDocsDir(slug, version), "manifest.json"));
   }
 
   /** Count locally stored pages for a version */
@@ -129,7 +164,7 @@ export class LocalCache {
     const pageIndex = this.loadPageIndex(slug, version);
     if (pageIndex.length > 0) return pageIndex.length;
 
-    const dir = this.pagesDir(slug, version);
+    const dir = this.resolvePagesDir(slug, version);
     if (!existsSync(dir)) return 0;
     return this.collectMarkdownFiles(dir).length;
   }
@@ -139,14 +174,14 @@ export class LocalCache {
     const pageIndex = this.loadPageIndex(slug, version);
     if (pageIndex.length > 0) return pageIndex.map(page => page.page_uid);
 
-    const dir = this.pagesDir(slug, version);
+    const dir = this.resolvePagesDir(slug, version);
     if (!existsSync(dir)) return [];
     return this.collectMarkdownFiles(dir).map(file => file.replace(/\.md$/, ""));
   }
 
   /** Remove a library version from local cache */
   removeVersion(slug: string, version: string): void {
-    const dir = this.docsDir(slug, version);
+    const dir = this.resolveDocsDir(slug, version);
     if (existsSync(dir)) {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -167,20 +202,21 @@ export class LocalCache {
     const parentDir = join(this.cacheDir, "docs", slug);
     mkdirSync(parentDir, { recursive: true });
 
-    if (existsSync(finalDir)) {
-      rmSync(finalDir, { recursive: true, force: true });
+    const existingDir = this.resolveDocsDir(slug, version);
+    if (existsSync(existingDir)) {
+      rmSync(existingDir, { recursive: true, force: true });
     }
 
     renameSync(stagedDocsDir, finalDir);
   }
 
   backupVersion(slug: string, version: string): string | null {
-    const finalDir = this.docsDir(slug, version);
-    if (!existsSync(finalDir)) return null;
+    const existingDir = this.resolveDocsDir(slug, version);
+    if (!existsSync(existingDir)) return null;
 
     const backupRoot = this.createTempInstallDir(slug, version);
     const backupDir = join(backupRoot, "docs");
-    renameSync(finalDir, backupDir);
+    renameSync(existingDir, backupDir);
     return backupDir;
   }
 
@@ -219,7 +255,12 @@ export class LocalCache {
   loadState(): InstalledState {
     const path = this.statePath();
     if (!existsSync(path)) return { libraries: [] };
-    return JSON.parse(readFileSync(path, "utf-8"));
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as {
+      libraries?: Array<InstalledLibrary | LegacyInstalledLibrary>;
+    };
+    return {
+      libraries: (parsed.libraries ?? []).map(entry => this.normalizeInstalledLibrary(entry)),
+    };
   }
 
   saveState(state: InstalledState): void {
@@ -255,8 +296,58 @@ export class LocalCache {
     return this.loadState().libraries;
   }
 
-  private pagePath(slug: string, version: string, pageUid: string): string {
-    return join(this.pagesDir(slug, version), `${normalizePageUid(pageUid)}.md`);
+  private pagePath(
+    slug: string,
+    version: string,
+    pageUid: string,
+    options: { existing?: boolean } = {},
+  ): string {
+    const pagesDir = options.existing ? this.resolvePagesDir(slug, version) : this.pagesDir(slug, version);
+    return join(pagesDir, `${normalizePageUid(pageUid)}.md`);
+  }
+
+  private resolveDocsDir(slug: string, version: string): string {
+    const canonicalDir = this.docsDir(slug, version);
+    if (existsSync(canonicalDir)) return canonicalDir;
+
+    const installed = this.findInstalled(slug, version);
+    if (installed?.legacy_namespace && installed.legacy_name) {
+      const legacyDir = join(this.cacheDir, "docs", installed.legacy_namespace, installed.legacy_name, version);
+      if (existsSync(legacyDir)) return legacyDir;
+    }
+
+    return canonicalDir;
+  }
+
+  private resolvePagesDir(slug: string, version: string): string {
+    return join(this.resolveDocsDir(slug, version), "pages");
+  }
+
+  private normalizeInstalledLibrary(entry: InstalledLibrary | LegacyInstalledLibrary): InstalledLibrary {
+    if ("slug" in entry && entry.slug) {
+      return entry;
+    }
+
+    if (!("namespace" in entry) || !("name" in entry)) {
+      throw new Error("Invalid installed.json entry: missing slug and legacy namespace/name");
+    }
+
+    return {
+      slug: this.legacySlug(entry.namespace, entry.name),
+      version: entry.version,
+      profile: entry.profile,
+      installed_at: entry.installed_at,
+      manifest_checksum: entry.manifest_checksum,
+      page_count: entry.page_count,
+      pinned: entry.pinned,
+      index_schema_version: entry.index_schema_version,
+      legacy_namespace: entry.namespace,
+      legacy_name: entry.name,
+    };
+  }
+
+  private legacySlug(namespace: string, name: string): string {
+    return GENERIC_SOURCE_NAMES.has(name.toLowerCase()) ? namespace : name;
   }
 
   private collectMarkdownFiles(path: string, relativeDir = ""): string[] {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { LocalCache, type InstalledLibrary } from "../lib/local-cache.js";
@@ -17,6 +17,30 @@ describe("LocalCache", () => {
   afterEach(() => {
     rmSync(cacheDir, { recursive: true, force: true });
   });
+
+  function writeLegacyInstalled(entry: {
+    namespace: string;
+    name: string;
+    version: string;
+    profile?: "slim" | "full";
+    installed_at?: string;
+    manifest_checksum?: string | null;
+    page_count?: number;
+  }) {
+    writeFileSync(join(cacheDir, "state", "installed.json"), JSON.stringify({
+      libraries: [{
+        profile: "full",
+        installed_at: "2026-03-15T00:00:00Z",
+        manifest_checksum: "sha256:legacy",
+        page_count: 1,
+        ...entry,
+      }],
+    }, null, 2));
+  }
+
+  function legacyDocsDir(namespace: string, name: string, version: string): string {
+    return join(cacheDir, "docs", namespace, name, version);
+  }
 
   describe("directory setup", () => {
     it("creates docs and state directories", () => {
@@ -185,6 +209,84 @@ describe("LocalCache", () => {
       cache.addInstalled(lib);
       cache.addInstalled({ ...lib, slug: "rails", version: "8.0.0" });
       expect(cache.listInstalled().length).toBe(2);
+    });
+
+    it("normalizes legacy installed.json entries to slug-first libraries", () => {
+      writeLegacyInstalled({
+        namespace: "laravel",
+        name: "docs",
+        version: "12.x",
+      });
+
+      expect(cache.listInstalled()).toMatchObject([{
+        slug: "laravel",
+        version: "12.x",
+        legacy_namespace: "laravel",
+        legacy_name: "docs",
+      }]);
+      expect(cache.findInstalled("laravel", "12.x")).toMatchObject({
+        slug: "laravel",
+        version: "12.x",
+      });
+    });
+  });
+
+  describe("legacy 0.1.0 docs layout compatibility", () => {
+    it("reads cached docs from docs/<namespace>/<name>/<version>", () => {
+      writeLegacyInstalled({
+        namespace: "laravel",
+        name: "docs",
+        version: "12.x",
+      });
+
+      const docsDir = legacyDocsDir("laravel", "docs", "12.x");
+      mkdirSync(join(docsDir, "pages", "guide"), { recursive: true });
+
+      const pageIndex: PageRecord[] = [{
+        page_uid: "guide/routing",
+        path: "guide/routing.md",
+        title: "Routing",
+        url: "https://laravel.com/docs/12.x/routing",
+        checksum: "sha256:routing",
+        bytes: 42,
+        headings: ["Routing"],
+        updated_at: "2026-03-15T00:00:00Z",
+      }];
+
+      writeFileSync(join(docsDir, "manifest.json"), JSON.stringify({ version: "12.x" }, null, 2));
+      writeFileSync(join(docsDir, "page-index.json"), JSON.stringify(pageIndex, null, 2));
+      writeFileSync(join(docsDir, "pages", "guide", "routing.md"), "# Routing");
+
+      expect(cache.hasManifest("laravel", "12.x")).toBe(true);
+      expect(cache.loadPageIndex("laravel", "12.x")).toEqual(pageIndex);
+      expect(cache.readPage("laravel", "12.x", "guide/routing")).toBe("# Routing");
+      expect(cache.countPages("laravel", "12.x")).toBe(1);
+      expect(cache.listPageUids("laravel", "12.x")).toEqual(["guide/routing"]);
+    });
+
+    it("backs up and removes legacy docs directories by slug", () => {
+      writeLegacyInstalled({
+        namespace: "laravel",
+        name: "docs",
+        version: "12.x",
+      });
+
+      const docsDir = legacyDocsDir("laravel", "docs", "12.x");
+      mkdirSync(join(docsDir, "pages"), { recursive: true });
+      writeFileSync(join(docsDir, "manifest.json"), JSON.stringify({ version: "12.x" }, null, 2));
+      writeFileSync(join(docsDir, "pages", "intro.md"), "# Intro");
+
+      const backupDir = cache.backupVersion("laravel", "12.x");
+      expect(backupDir).not.toBeNull();
+      expect(cache.hasManifest("laravel", "12.x")).toBe(false);
+
+      cache.restoreVersionFromBackup("laravel", "12.x", backupDir!);
+      expect(cache.hasManifest("laravel", "12.x")).toBe(true);
+      expect(cache.readPage("laravel", "12.x", "intro")).toBe("# Intro");
+
+      cache.removeVersion("laravel", "12.x");
+      expect(cache.hasManifest("laravel", "12.x")).toBe(false);
+      expect(cache.readPage("laravel", "12.x", "intro")).toBeNull();
     });
   });
 });

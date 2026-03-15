@@ -133,6 +133,31 @@ describe("Tool logic", () => {
       expect(installed[1]).not.toHaveProperty("pinned");
       expect(result.content[0].text).not.toContain("[pinned]");
     });
+
+    it("preserves local-doc metadata from the shared cache", () => {
+      cache.addInstalled({
+        slug: "team-docs",
+        version: "local",
+        profile: "full",
+        installed_at: "2026-03-15T00:00:00Z",
+        manifest_checksum: "sha256:local",
+        page_count: 3,
+        source_kind: "local",
+        source_paths: ["/tmp/team-docs"],
+      });
+
+      const result = handleListInstalledDocs(deps);
+      expect(result.structuredContent).toMatchObject({
+        results: [
+          {
+            library: "team-docs",
+            version: "local",
+            source_kind: "local",
+            source_paths: ["/tmp/team-docs"],
+          },
+        ],
+      });
+    });
   });
 
   describe("search_libraries", () => {
@@ -954,6 +979,31 @@ describe("Tool logic", () => {
   });
 
   describe("update_docs", () => {
+    it("skips local-only docs instead of hitting the registry", async () => {
+      cache.addInstalled({
+        slug: "team-docs",
+        version: "local",
+        profile: "full",
+        installed_at: "2026-03-15T00:00:00Z",
+        manifest_checksum: "sha256:local",
+        page_count: 3,
+        source_kind: "local",
+        source_paths: ["/tmp/team-docs"],
+      });
+
+      deps.registryClient = {
+        resolve: async () => {
+          throw new Error("local-only docs should not resolve against the registry");
+        },
+      } as unknown as ServerDeps["registryClient"];
+
+      const result = await handleUpdateDocs(deps, {});
+      expect(result.structuredContent).toEqual({
+        results: [],
+        skipped_local: ["team-docs"],
+      });
+    });
+
     it("refreshes an installed library when the version stays the same but the manifest checksum changes", async () => {
       cache.savePageIndex("widgets", "1.2.3", [{
         page_uid: "guide",

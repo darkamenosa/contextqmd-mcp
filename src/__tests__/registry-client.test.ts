@@ -45,8 +45,7 @@ describe("RegistryClient", () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
       data: {
         library: {
-          namespace: "rails",
-          name: "rails",
+          slug: "rails",
           display_name: "Rails",
           aliases: ["rails"],
           homepage_url: "https://rubyonrails.org",
@@ -82,8 +81,7 @@ describe("RegistryClient", () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
       data: {
         schema_version: "1.0",
-        namespace: "vercel",
-        name: "nextjs",
+        slug: "nextjs",
         display_name: "Next.js",
         version: "16.1.6",
         channel: "stable",
@@ -91,14 +89,14 @@ describe("RegistryClient", () => {
         doc_count: 2,
         source: null,
         page_index: {
-          url: "/api/v1/libraries/vercel/nextjs/versions/16.1.6/page-index",
+          url: "/api/v1/libraries/nextjs/versions/16.1.6/page-index",
           sha256: null,
         },
         profiles: {
           full: {
             bundle: {
               format: "tar.gz",
-              url: "/api/v1/libraries/vercel/nextjs/versions/16.1.6/bundles/full",
+              url: "/api/v1/libraries/nextjs/versions/16.1.6/bundles/full",
               sha256: "sha256:abc123",
             },
           },
@@ -123,15 +121,15 @@ describe("RegistryClient", () => {
     }));
 
     const client = new RegistryClient("https://contextqmd.com");
-    const manifest = await client.getManifest("vercel", "nextjs", "16.1.6");
+    const manifest = await client.getManifest("nextjs", "16.1.6");
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://contextqmd.com/api/v1/libraries/vercel/nextjs/versions/16.1.6/manifest",
+      "https://contextqmd.com/api/v1/libraries/nextjs/versions/16.1.6/manifest",
       { headers: { Accept: "application/json" } },
     );
     expect(manifest.data.profiles.full?.bundle).toMatchObject({
       format: "tar.gz",
-      url: "/api/v1/libraries/vercel/nextjs/versions/16.1.6/bundles/full",
+      url: "/api/v1/libraries/nextjs/versions/16.1.6/bundles/full",
       sha256: "sha256:abc123",
     });
   });
@@ -143,12 +141,12 @@ describe("RegistryClient", () => {
     }));
 
     const client = new RegistryClient("https://contextqmd.com/", "test-token");
-    const bytes = await client.downloadBundle("/api/v1/libraries/vercel/nextjs/versions/16.1.6/bundles/full");
+    const bytes = await client.downloadBundle("/api/v1/libraries/nextjs/versions/16.1.6/bundles/full");
 
     expect(bytes).toBeInstanceOf(Buffer);
     expect(Array.from(bytes)).toEqual([1, 2, 3, 4]);
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://contextqmd.com/api/v1/libraries/vercel/nextjs/versions/16.1.6/bundles/full",
+      "https://contextqmd.com/api/v1/libraries/nextjs/versions/16.1.6/bundles/full",
       { headers: { Authorization: "Token test-token" } },
     );
   });

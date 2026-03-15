@@ -7,7 +7,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -89,8 +89,7 @@ describe("Install → Search (bundle-first local flow)", () => {
     }];
     const manifest: Manifest = {
       schema_version: "1.0",
-      namespace: "demo",
-      name: "kit",
+      slug: "demo-kit",
       display_name: "Demo Kit",
       version: "3.0.0",
       channel: "stable",
@@ -98,14 +97,14 @@ describe("Install → Search (bundle-first local flow)", () => {
       doc_count: 1,
       source: null,
       page_index: {
-        url: "/api/v1/libraries/demo/kit/versions/3.0.0/page-index",
+        url: "/api/v1/libraries/demo-kit/versions/3.0.0/page-index",
         sha256: null,
       },
       profiles: {
         full: {
           bundle: {
             format: "tar.gz",
-            url: "/api/v1/libraries/demo/kit/versions/3.0.0/bundles/full",
+            url: "/api/v1/libraries/demo-kit/versions/3.0.0/bundles/full",
             sha256: "",
           },
         },
@@ -137,8 +136,7 @@ describe("Install → Search (bundle-first local flow)", () => {
       resolve: async () => ({
         data: {
           library: {
-            namespace: "demo",
-            name: "kit",
+            slug: "demo-kit",
             display_name: "Demo Kit",
             aliases: ["kit"],
             homepage_url: "https://example.com",
@@ -160,18 +158,18 @@ describe("Install → Search (bundle-first local flow)", () => {
     const install = await handleInstallDocs(deps, { library: "kit", version: "3.0.0" });
     expect(install.content[0].text).toContain("Installed from bundle");
     expect(install.structuredContent).toMatchObject({
-      library: "demo/kit",
+      library: "demo-kit",
       version: "3.0.0",
     });
 
     const search = await handleSearchDocs(deps, {
       query: "keep search local",
-      library: "demo/kit",
+      library: "demo-kit",
       version: "3.0.0",
       mode: "fts",
     });
     expect(search.structuredContent?.results[0]).toMatchObject({
-      library: "demo/kit",
+      library: "demo-kit",
       version: "3.0.0",
       doc_path: "guide/routing.md",
       page_uid: "routing",
@@ -189,15 +187,6 @@ describe.skipIf(skipIntegration)("E2E: Install → Search", () => {
 
   beforeAll(async () => {
     client = new RegistryClient(REGISTRY_URL);
-    cacheDir = mkdtempSync(join(tmpdir(), "contextqmd-e2e-"));
-    cache = new LocalCache(cacheDir);
-    indexer = new DocIndexer(join(cacheDir, "index.sqlite"), cache);
-    deps = {
-      cache,
-      indexer,
-      registryClient: client,
-    };
-
     // Verify registry is available
     try {
       await client.health();
@@ -206,27 +195,38 @@ describe.skipIf(skipIntegration)("E2E: Install → Search", () => {
     }
   });
 
-  afterAll(async () => {
-    await indexer?.close();
+  beforeEach(() => {
+    cacheDir = mkdtempSync(join(tmpdir(), "contextqmd-e2e-"));
+    cache = new LocalCache(cacheDir);
+    indexer = new DocIndexer(join(cacheDir, "index.sqlite"), cache);
+    deps = {
+      cache,
+      indexer,
+      registryClient: client,
+    };
+  });
+
+  afterEach(async () => {
+    await indexer.close();
     if (cacheDir) rmSync(cacheDir, { recursive: true, force: true });
   });
 
-  it("installs Next.js docs and searches them", async () => {
-    const install = await handleInstallDocs(deps, { library: "vercel/next-js" });
+  it("installs Laravel docs and searches them", async () => {
+    const install = await handleInstallDocs(deps, { library: "laravel" });
     expect(install.isError).not.toBe(true);
     expect(install.structuredContent).toMatchObject({
-      library: "vercel/next-js",
+      library: "laravel",
       changed: true,
     });
 
     const version = install.structuredContent?.version as string;
-    expect(cache.hasManifest("vercel", "next-js", version)).toBe(true);
-    expect(cache.loadPageIndex("vercel", "next-js", version).length).toBeGreaterThan(0);
-    expect(cache.countPages("vercel", "next-js", version)).toBeGreaterThan(0);
+    expect(cache.hasManifest("laravel", version)).toBe(true);
+    expect(cache.loadPageIndex("laravel", version).length).toBeGreaterThan(0);
+    expect(cache.countPages("laravel", version)).toBeGreaterThan(0);
 
     const search = await handleSearchDocs(deps, {
-      query: "routing",
-      library: "vercel/next-js",
+      query: "authentication",
+      library: "laravel",
       version,
       mode: "fts",
     });
@@ -234,7 +234,7 @@ describe.skipIf(skipIntegration)("E2E: Install → Search", () => {
     expect(search.structuredContent?.results).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          library: "vercel/next-js",
+          library: "laravel",
           version,
         }),
       ]),
@@ -242,30 +242,30 @@ describe.skipIf(skipIntegration)("E2E: Install → Search", () => {
 
     const allInstalled = cache.listInstalled();
     expect(allInstalled).toHaveLength(1);
-    expect(allInstalled[0].namespace).toBe("vercel");
+    expect(allInstalled[0].slug).toBe("laravel");
     expect(allInstalled[0].page_count).toBeGreaterThan(0);
   });
 
-  it("installs Rails docs alongside Next.js", async () => {
-    const nextInstall = await handleInstallDocs(deps, { library: "vercel/next-js" });
-    expect(nextInstall.isError).not.toBe(true);
+  it("installs Kamal docs alongside Laravel", async () => {
+    const laravelInstall = await handleInstallDocs(deps, { library: "laravel" });
+    expect(laravelInstall.isError).not.toBe(true);
 
-    const railsInstall = await handleInstallDocs(deps, { library: "rails/rails" });
-    expect(railsInstall.isError).not.toBe(true);
+    const kamalInstall = await handleInstallDocs(deps, { library: "kamal" });
+    expect(kamalInstall.isError).not.toBe(true);
 
-    const railsVersion = railsInstall.structuredContent?.version as string;
-    const railsResults = await handleSearchDocs(deps, {
-      query: "Active Record",
-      library: "rails/rails",
-      version: railsVersion,
+    const kamalVersion = kamalInstall.structuredContent?.version as string;
+    const kamalResults = await handleSearchDocs(deps, {
+      query: "proxy",
+      library: "kamal",
+      version: kamalVersion,
       mode: "fts",
     });
-    expect(railsResults.isError).not.toBe(true);
-    expect(railsResults.structuredContent?.results).toEqual(
+    expect(kamalResults.isError).not.toBe(true);
+    expect(kamalResults.structuredContent?.results).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          library: "rails/rails",
-          version: railsVersion,
+          library: "kamal",
+          version: kamalVersion,
         }),
       ]),
     );
@@ -276,25 +276,25 @@ describe.skipIf(skipIntegration)("E2E: Install → Search", () => {
 
   it("returns NOT_INSTALLED before install and succeeds after install", async () => {
     const missing = await handleSearchDocs(deps, {
-      query: "useRef",
-      library: "reactjs/react-dev",
+      query: "proxy",
+      library: "kamal",
       mode: "fts",
     });
     expect(missing.isError).toBe(true);
     expect(missing.structuredContent).toMatchObject({
       error: {
         code: "NOT_INSTALLED",
-        library: "reactjs/react-dev",
+        library: "kamal",
       },
     });
 
-    const install = await handleInstallDocs(deps, { library: "reactjs/react-dev" });
+    const install = await handleInstallDocs(deps, { library: "kamal" });
     expect(install.isError).not.toBe(true);
 
     const version = install.structuredContent?.version as string;
     const results = await handleSearchDocs(deps, {
-      query: "useRef",
-      library: "reactjs/react-dev",
+      query: "proxy",
+      library: "kamal",
       version,
       mode: "fts",
     });

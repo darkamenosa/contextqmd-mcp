@@ -32,7 +32,7 @@ export interface IndexedPage {
 export type SearchMode = "fts" | "vector" | "hybrid" | "auto";
 
 export interface SearchOptions {
-  library?: string; // namespace/name
+  library?: string; // canonical slug
   version?: string;
   maxResults?: number;
   mode?: SearchMode;
@@ -46,7 +46,7 @@ export interface DocSearchResult {
   contentMd: string;
   score: number;
   snippet: string;
-  library: string; // namespace/name
+  library: string; // canonical slug
   version: string;
   searchMode: SearchMode; // which mode was actually used
   lineStart: number | null;
@@ -139,41 +139,40 @@ export class DocIndexer {
   }
 
   /**
-   * Build a QMD collection name from library coordinates.
+   * Build a QMD collection name from canonical library coordinates.
    * Uses double-underscore separator because QMD splits on "/" internally.
    */
-  static collectionName(namespace: string, name: string, version: string): string {
-    return `${namespace}__${name}__${version}`;
+  static collectionName(slug: string, version: string): string {
+    return `${slug}__${version}`;
   }
 
   /**
    * Parse a QMD collection name back to library coordinates.
    */
-  static parseCollectionName(collectionName: string): { namespace: string; name: string; version: string } | null {
+  static parseCollectionName(collectionName: string): { slug: string; version: string } | null {
     const parts = collectionName.split("__");
-    if (parts.length !== 3) return null;
-    return { namespace: parts[0], name: parts[1], version: parts[2] };
+    if (parts.length !== 2) return null;
+    return { slug: parts[0], version: parts[1] };
   }
 
   /**
    * Index all pages for a library version from the local cache.
    */
   async indexLibraryVersion(
-    namespace: string,
-    name: string,
+    slug: string,
     version: string,
   ): Promise<number> {
     const store = await this.getStore();
-    const collectionName = DocIndexer.collectionName(namespace, name, version);
-    const pageUids = this.cache.listPageUids(namespace, name, version);
+    const collectionName = DocIndexer.collectionName(slug, version);
+    const pageUids = this.cache.listPageUids(slug, version);
     const desiredPaths = new Set<string>();
 
     let indexed = 0;
     for (const pageUid of pageUids) {
-      const content = this.cache.readPage(namespace, name, version, pageUid);
+      const content = this.cache.readPage(slug, version, pageUid);
       if (!content) continue;
 
-      const page = this.cache.findPageByUid(namespace, name, version, pageUid);
+      const page = this.cache.findPageByUid(slug, version, pageUid);
       const docPath = page ? normalizeDocPath(page.path) : `${pageUid}.md`;
       desiredPaths.add(docPath);
       const title = page?.title ?? extractTitle(content, pageUid);
@@ -230,15 +229,14 @@ export class DocIndexer {
    * Index a single page for a library version.
    */
   async indexPage(
-    namespace: string,
-    name: string,
+    slug: string,
     version: string,
     pageUid: string,
     content: string,
   ): Promise<void> {
     const store = await this.getStore();
-    const collName = DocIndexer.collectionName(namespace, name, version);
-    const page = this.cache.findPageByUid(namespace, name, version, pageUid);
+    const collName = DocIndexer.collectionName(slug, version);
+    const page = this.cache.findPageByUid(slug, version, pageUid);
     const docPath = page ? normalizeDocPath(page.path) : `${pageUid}.md`;
     const title = page?.title ?? extractTitle(content, pageUid);
     const hash = await hashContent(content);
@@ -279,9 +277,9 @@ export class DocIndexer {
   /**
    * Remove all indexed documents for a library version.
    */
-  async removeLibraryVersion(namespace: string, name: string, version: string): Promise<void> {
+  async removeLibraryVersion(slug: string, version: string): Promise<void> {
     const store = await this.getStore();
-    const collectionName = DocIndexer.collectionName(namespace, name, version);
+    const collectionName = DocIndexer.collectionName(slug, version);
     const paths = store.getActiveDocumentPaths(collectionName);
     for (const p of paths) {
       store.deactivateDocument(collectionName, p);
@@ -336,8 +334,7 @@ export class DocIndexer {
     // If both library and version specified, filter at QMD level
     let collectionFilter: string | undefined;
     if (options.library && options.version) {
-      const [ns, nm] = options.library.split("/");
-      collectionFilter = DocIndexer.collectionName(ns, nm, options.version);
+      collectionFilter = DocIndexer.collectionName(options.library, options.version);
     }
     // Otherwise filter post-search in mapResults
 
@@ -355,8 +352,7 @@ export class DocIndexer {
 
     let collectionFilter: string | undefined;
     if (options.library && options.version) {
-      const [ns, nm] = options.library.split("/");
-      collectionFilter = DocIndexer.collectionName(ns, nm, options.version);
+      collectionFilter = DocIndexer.collectionName(options.library, options.version);
     }
 
     try {
@@ -385,8 +381,7 @@ export class DocIndexer {
 
     let collectionFilter: string | undefined;
     if (options.library && options.version) {
-      const [ns, nm] = options.library.split("/");
-      collectionFilter = DocIndexer.collectionName(ns, nm, options.version);
+      collectionFilter = DocIndexer.collectionName(options.library, options.version);
     }
 
     try {
@@ -430,20 +425,16 @@ export class DocIndexer {
         const collName = (r as { collectionName?: string }).collectionName
           ?? r.displayPath.split("/")[0];
         const parsed = DocIndexer.parseCollectionName(collName);
-        const library = parsed ? `${parsed.namespace}/${parsed.name}` : collName;
+        const library = parsed ? parsed.slug : collName;
 
         let docPath = r.displayPath;
         if (docPath.startsWith(collName + "/")) {
           docPath = docPath.slice(collName.length + 1);
         }
         docPath = normalizeDocPath(docPath);
-        const page = parsed
-          ? this.cache.findPageByPath(parsed.namespace, parsed.name, parsed.version, docPath)
-          : null;
+        const page = parsed ? this.cache.findPageByPath(parsed.slug, parsed.version, docPath) : null;
         const pageUid = page?.page_uid ?? docPath.replace(/\.md$/, "");
-        const contentMd = parsed
-          ? (this.cache.readPage(parsed.namespace, parsed.name, parsed.version, pageUid) ?? r.body ?? "")
-          : (r.body ?? "");
+        const contentMd = parsed ? (this.cache.readPage(parsed.slug, parsed.version, pageUid) ?? r.body ?? "") : (r.body ?? "");
         const snippet = snippetFn(r);
 
         return {

@@ -39,41 +39,33 @@ export class RegistryClient {
   }
 
   async getLibrary(
-    namespace: string,
-    name: string,
+    slug: string,
   ): Promise<ApiResponse<Library>> {
-    return this.get(`libraries/${namespace}/${name}`);
+    return this.get(`libraries/${slug}`);
   }
 
   async getVersions(
-    namespace: string,
-    name: string,
+    slug: string,
     cursor?: string,
   ): Promise<ApiResponse<Version[]>> {
     const params = cursor ? `?cursor=${cursor}` : "";
-    return this.get(`libraries/${namespace}/${name}/versions${params}`);
+    return this.get(`libraries/${slug}/versions${params}`);
   }
 
   async getManifest(
-    namespace: string,
-    name: string,
+    slug: string,
     version: string,
   ): Promise<ApiResponse<Manifest>> {
-    return this.get(
-      `libraries/${namespace}/${name}/versions/${version}/manifest`,
-    );
+    return this.get(`libraries/${slug}/versions/${version}/manifest`);
   }
 
   async getPageIndex(
-    namespace: string,
-    name: string,
+    slug: string,
     version: string,
     cursor?: string,
   ): Promise<ApiResponse<PageRecord[]>> {
     const params = cursor ? `?cursor=${cursor}` : "";
-    return this.get(
-      `libraries/${namespace}/${name}/versions/${version}/page-index${params}`,
-    );
+    return this.get(`libraries/${slug}/versions/${version}/page-index${params}`);
   }
 
   /**
@@ -82,8 +74,7 @@ export class RegistryClient {
    * pages require multiple requests. Capped at 100 fetches (2000 pages).
    */
   async getAllPageIndex(
-    namespace: string,
-    name: string,
+    slug: string,
     version: string,
   ): Promise<PageRecord[]> {
     const MAX_PAGE_FETCHES = 100;
@@ -96,7 +87,7 @@ export class RegistryClient {
         console.warn(`[contextqmd] Page index pagination exceeded ${MAX_PAGE_FETCHES} pages, stopping`);
         break;
       }
-      const response = await this.getPageIndex(namespace, name, version, cursor);
+      const response = await this.getPageIndex(slug, version, cursor);
       allPages.push(...response.data);
       cursor = response.meta.cursor ?? undefined;
     } while (cursor);
@@ -105,8 +96,7 @@ export class RegistryClient {
   }
 
   async getPageContent(
-    namespace: string,
-    name: string,
+    slug: string,
     version: string,
     pageUid: string,
   ): Promise<
@@ -118,9 +108,7 @@ export class RegistryClient {
       content_md: string;
     }>
   > {
-    return this.get(
-      `libraries/${namespace}/${name}/versions/${version}/pages/${pageUid}`,
-    );
+    return this.get(`libraries/${slug}/versions/${version}/pages/${pageUid}`);
   }
 
   async resolve(

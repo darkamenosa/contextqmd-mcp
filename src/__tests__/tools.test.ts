@@ -108,8 +108,7 @@ describe("Tool logic", () => {
 
     it("returns installed libraries with details", () => {
       cache.addInstalled({
-        namespace: "vercel",
-        name: "nextjs",
+                slug: "nextjs",
         version: "15.1.0",
         profile: "slim",
         installed_at: "2026-03-09T12:00:00Z",
@@ -118,8 +117,7 @@ describe("Tool logic", () => {
         pinned: false,
       });
       cache.addInstalled({
-        namespace: "rails",
-        name: "rails",
+                slug: "rails",
         version: "8.0.0",
         profile: "full",
         installed_at: "2026-03-09T12:00:00Z",
@@ -131,7 +129,7 @@ describe("Tool logic", () => {
       const result = handleListInstalledDocs(deps);
       const installed = result.structuredContent?.results as Array<Record<string, unknown>>;
       expect(installed.length).toBe(2);
-      expect(installed[0].library).toBe("vercel/nextjs");
+      expect(installed[0].library).toBe("nextjs");
       expect(installed[1]).not.toHaveProperty("pinned");
       expect(result.content[0].text).not.toContain("[pinned]");
     });
@@ -140,8 +138,7 @@ describe("Tool logic", () => {
   describe("search_libraries", () => {
     it("returns catalog candidates with versions and local install status", async () => {
       cache.addInstalled({
-        namespace: "inertiajs",
-        name: "inertia-rails",
+                slug: "inertia-rails",
         version: "3.17.0",
         profile: "full",
         installed_at: "2026-03-12T00:00:00Z",
@@ -154,8 +151,7 @@ describe("Tool logic", () => {
         searchLibraries: async () => ({
           data: [
             {
-              namespace: "inertiajs",
-              name: "inertia-rails",
+                            slug: "inertia-rails",
               display_name: "Inertia Rails",
               aliases: ["inertia rails"],
               homepage_url: "https://inertiajs.com",
@@ -165,8 +161,7 @@ describe("Tool logic", () => {
               license_status: "verified",
             },
             {
-              namespace: "rails",
-              name: "rails",
+                            slug: "rails",
               display_name: "Rails",
               aliases: ["rails"],
               homepage_url: "https://rubyonrails.org",
@@ -178,8 +173,8 @@ describe("Tool logic", () => {
           ],
           meta: { cursor: null },
         }),
-        getVersions: async (namespace: string, name: string) => ({
-          data: namespace === "inertiajs" && name === "inertia-rails"
+        getVersions: async (slug: string) => ({
+          data: slug === "inertia-rails"
             ? [
               {
                 version: "3.17.0",
@@ -211,7 +206,7 @@ describe("Tool logic", () => {
 
       expect(matches).toHaveLength(2);
       expect(matches[0]).toMatchObject({
-        library: "inertiajs/inertia-rails",
+        library: "inertia-rails",
         default_version: "3.17.0",
         source_type: "website",
         license_status: "verified",
@@ -237,8 +232,7 @@ describe("Tool logic", () => {
       }];
       const manifest: Manifest = {
         schema_version: "1.0",
-        namespace: "acme",
-        name: "widgets",
+                slug: "widgets",
         display_name: "Acme Widgets",
         version: "1.2.3",
         channel: "stable",
@@ -285,8 +279,7 @@ describe("Tool logic", () => {
         resolve: async () => ({
           data: {
             library: {
-              namespace: "acme",
-              name: "widgets",
+                            slug: "widgets",
               display_name: "Acme Widgets",
               aliases: ["widgets"],
               homepage_url: "https://example.com",
@@ -314,19 +307,19 @@ describe("Tool logic", () => {
       } as unknown as ServerDeps["registryClient"];
 
       const install = await handleInstallDocs(deps, {
-        library: "acme/widgets",
+        library: "widgets",
         version: "1.2.3",
       });
 
       expect(install.content[0].text).toContain("Installed from bundle");
       expect(pageApiCalls).toBe(0);
-      expect(cache.hasManifest("acme", "widgets", "1.2.3")).toBe(true);
-      expect(cache.loadPageIndex("acme", "widgets", "1.2.3")).toHaveLength(1);
-      expect(cache.readPage("acme", "widgets", "1.2.3", "guide")).toContain("Bundle installs");
+      expect(cache.hasManifest("widgets", "1.2.3")).toBe(true);
+      expect(cache.loadPageIndex("widgets", "1.2.3")).toHaveLength(1);
+      expect(cache.readPage("widgets", "1.2.3", "guide")).toContain("Bundle installs");
 
       const search = await handleSearchDocs(deps, {
         query: "local markdown cache",
-        library: "acme/widgets",
+        library: "widgets",
         version: "1.2.3",
         mode: "fts",
       });
@@ -339,8 +332,7 @@ describe("Tool logic", () => {
 
     it("is a no-op when the same library version is already installed with the same manifest checksum", async () => {
       cache.addInstalled({
-        namespace: "acme",
-        name: "widgets",
+                slug: "widgets",
         version: "1.2.3",
         profile: "full",
         installed_at: "2026-03-12T00:00:00Z",
@@ -354,8 +346,7 @@ describe("Tool logic", () => {
         resolve: async () => ({
           data: {
             library: {
-              namespace: "acme",
-              name: "widgets",
+                            slug: "widgets",
               display_name: "Acme Widgets",
               aliases: ["widgets"],
               homepage_url: "https://example.com",
@@ -373,8 +364,7 @@ describe("Tool logic", () => {
         getManifest: async () => ({
           data: {
             schema_version: "1.0",
-            namespace: "acme",
-            name: "widgets",
+                        slug: "widgets",
             display_name: "Acme Widgets",
             version: "1.2.3",
             channel: "stable",
@@ -412,13 +402,13 @@ describe("Tool logic", () => {
       } as unknown as ServerDeps["registryClient"];
 
       const result = await handleInstallDocs(deps, {
-        library: "acme/widgets",
+        library: "widgets",
         version: "1.2.3",
       });
 
       expect(result.content[0].text).toContain("already installed and current");
       expect(result.structuredContent).toMatchObject({
-        library: "acme/widgets",
+        library: "widgets",
         version: "1.2.3",
         changed: false,
       });
@@ -428,8 +418,7 @@ describe("Tool logic", () => {
     it("falls back to page fetches when the manifest does not expose a supported bundle", async () => {
       const manifest: Manifest = {
         schema_version: "1.0",
-        namespace: "acme",
-        name: "legacy",
+                slug: "legacy",
         display_name: "Legacy Docs",
         version: "9.9.9",
         channel: "stable",
@@ -478,8 +467,7 @@ describe("Tool logic", () => {
         resolve: async () => ({
           data: {
             library: {
-              namespace: "acme",
-              name: "legacy",
+                            slug: "legacy",
               display_name: "Legacy Docs",
               aliases: ["legacy"],
               homepage_url: "https://example.com",
@@ -518,17 +506,17 @@ describe("Tool logic", () => {
       } as unknown as ServerDeps["registryClient"];
 
       const install = await handleInstallDocs(deps, {
-        library: "acme/legacy",
+        library: "legacy",
         version: "9.9.9",
       });
 
       expect(install.content[0].text).toContain("page API fallback");
       expect(pageApiCalls).toBe(2);
-      expect(cache.readPage("acme", "legacy", "9.9.9", "intro")).toContain("fallback");
+      expect(cache.readPage("legacy", "9.9.9", "intro")).toContain("fallback");
     });
 
     it("reinstalls the same version when the manifest checksum changes", async () => {
-      cache.savePageIndex("acme", "widgets", "1.2.3", [{
+      cache.savePageIndex("widgets", "1.2.3", [{
         page_uid: "guide",
         path: "guide.md",
         title: "Guide",
@@ -538,11 +526,10 @@ describe("Tool logic", () => {
         headings: ["Guide"],
         updated_at: "2026-03-11T00:00:00Z",
       }]);
-      cache.savePage("acme", "widgets", "1.2.3", "guide", "# Guide\n\nOld content");
-      await indexer.indexLibraryVersion("acme", "widgets", "1.2.3");
+      cache.savePage("widgets", "1.2.3", "guide", "# Guide\n\nOld content");
+      await indexer.indexLibraryVersion("widgets", "1.2.3");
       cache.addInstalled({
-        namespace: "acme",
-        name: "widgets",
+                slug: "widgets",
         version: "1.2.3",
         profile: "full",
         installed_at: "2026-03-11T00:00:00Z",
@@ -563,8 +550,7 @@ describe("Tool logic", () => {
       }];
       const manifest: Manifest = {
         schema_version: "1.0",
-        namespace: "acme",
-        name: "widgets",
+                slug: "widgets",
         display_name: "Acme Widgets",
         version: "1.2.3",
         channel: "stable",
@@ -594,8 +580,7 @@ describe("Tool logic", () => {
         resolve: async () => ({
           data: {
             library: {
-              namespace: "acme",
-              name: "widgets",
+                            slug: "widgets",
               display_name: "Acme Widgets",
               aliases: ["widgets"],
               homepage_url: "https://example.com",
@@ -625,17 +610,17 @@ describe("Tool logic", () => {
       } as unknown as ServerDeps["registryClient"];
 
       const result = await handleInstallDocs(deps, {
-        library: "acme/widgets",
+        library: "widgets",
         version: "1.2.3",
       });
 
-      expect(result.content[0].text).toContain("Reinstalled acme/widgets@1.2.3");
-      expect(cache.readPage("acme", "widgets", "1.2.3", "guide")).toContain("New content");
-      expect(cache.findInstalled("acme", "widgets", "1.2.3")?.manifest_checksum).toBe("sha256:new-manifest");
+      expect(result.content[0].text).toContain("Reinstalled widgets@1.2.3");
+      expect(cache.readPage("widgets", "1.2.3", "guide")).toContain("New content");
+      expect(cache.findInstalled("widgets", "1.2.3")?.manifest_checksum).toBe("sha256:new-manifest");
 
       const search = await handleSearchDocs(deps, {
         query: "New content",
-        library: "acme/widgets",
+        library: "widgets",
         version: "1.2.3",
         mode: "fts",
       });
@@ -647,8 +632,7 @@ describe("Tool logic", () => {
     it("falls back to page fetches when a supported bundle is incomplete", async () => {
       const manifest: Manifest = {
         schema_version: "1.0",
-        namespace: "acme",
-        name: "broken",
+                slug: "broken",
         display_name: "Broken Docs",
         version: "1.0.0",
         channel: "stable",
@@ -703,8 +687,7 @@ describe("Tool logic", () => {
         resolve: async () => ({
           data: {
             library: {
-              namespace: "acme",
-              name: "broken",
+                            slug: "broken",
               display_name: "Broken Docs",
               aliases: ["broken"],
               homepage_url: "https://example.com",
@@ -741,27 +724,26 @@ describe("Tool logic", () => {
       } as unknown as ServerDeps["registryClient"];
 
       const install = await handleInstallDocs(deps, {
-        library: "acme/broken",
+        library: "broken",
         version: "1.0.0",
       });
 
       expect(install.content[0].text).toContain("page API fallback");
       expect(install.content[0].text).toContain("Bundle fallback");
       expect(pageApiCalls).toBe(2);
-      expect(cache.readPage("acme", "broken", "1.0.0", "missing-page")).toContain("fallback recovered");
+      expect(cache.readPage("broken", "1.0.0", "missing-page")).toContain("fallback recovered");
     });
   });
 
   describe("search_docs (FTS)", () => {
     beforeEach(async () => {
       // Simulate installed library with cached pages
-      cache.savePage("vercel", "nextjs", "15.1.0", "app-router", "# App Router\n\nThe App Router is a new routing model in Next.js 13+ that uses React Server Components.");
-      cache.savePage("vercel", "nextjs", "15.1.0", "pages-router", "# Pages Router\n\nThe Pages Router is the original routing model in Next.js.");
-      cache.savePage("vercel", "nextjs", "15.1.0", "data-fetching", "# Data Fetching\n\nNext.js supports getServerSideProps, getStaticProps, and ISR.");
-      await indexer.indexLibraryVersion("vercel", "nextjs", "15.1.0");
+      cache.savePage("nextjs", "15.1.0", "app-router", "# App Router\n\nThe App Router is a new routing model in Next.js 13+ that uses React Server Components.");
+      cache.savePage("nextjs", "15.1.0", "pages-router", "# Pages Router\n\nThe Pages Router is the original routing model in Next.js.");
+      cache.savePage("nextjs", "15.1.0", "data-fetching", "# Data Fetching\n\nNext.js supports getServerSideProps, getStaticProps, and ISR.");
+      await indexer.indexLibraryVersion("nextjs", "15.1.0");
       cache.addInstalled({
-        namespace: "vercel",
-        name: "nextjs",
+                slug: "nextjs",
         version: "15.1.0",
         profile: "slim",
         installed_at: "2026-03-09T12:00:00Z",
@@ -788,12 +770,12 @@ describe("Tool logic", () => {
     });
 
     it("filters by library", async () => {
-      const results = await indexer.searchFTS("router", { library: "vercel/nextjs" });
-      expect(results.every(r => r.library === "vercel/nextjs")).toBe(true);
+      const results = await indexer.searchFTS("router", { library: "nextjs" });
+      expect(results.every(r => r.library === "nextjs")).toBe(true);
     });
 
     it("returns page-level local markdown results for MCP consumers", async () => {
-      cache.savePageIndex("facebook", "react", "19.2.0", [{
+      cache.savePageIndex("react", "19.2.0", [{
         page_uid: "pg_use_ref",
         path: "reference/react/useRef.md",
         title: "useRef",
@@ -803,17 +785,13 @@ describe("Tool logic", () => {
         headings: ["useRef"],
         updated_at: "2026-03-11T00:00:00Z",
       }]);
-      cache.savePage(
-        "facebook",
-        "react",
-        "19.2.0",
+      cache.savePage("react", "19.2.0",
         "pg_use_ref",
         "# useRef\n\n## Optimize refs\n\nUse refs to keep mutable values without re-rendering.",
       );
-      await indexer.indexLibraryVersion("facebook", "react", "19.2.0");
+      await indexer.indexLibraryVersion("react", "19.2.0");
       cache.addInstalled({
-        namespace: "facebook",
-        name: "react",
+                slug: "react",
         version: "19.2.0",
         profile: "full",
         installed_at: "2026-03-11T00:00:00Z",
@@ -824,7 +802,7 @@ describe("Tool logic", () => {
 
       const result = await handleSearchDocs(deps, {
         query: "optimize refs",
-        library: "facebook/react",
+        library: "react",
         version: "19.2.0",
         max_results: 5,
         mode: "fts",
@@ -833,7 +811,7 @@ describe("Tool logic", () => {
       expect(result.content[0].text).toContain("page-level local results");
       expect(result.structuredContent?.results).toHaveLength(1);
       expect(result.structuredContent?.results[0]).toMatchObject({
-        library: "facebook/react",
+        library: "react",
         version: "19.2.0",
         doc_path: "reference/react/useRef.md",
         page_uid: "pg_use_ref",
@@ -851,7 +829,7 @@ describe("Tool logic", () => {
     it("returns an empty structured result set on no match", async () => {
       const result = await handleSearchDocs(deps, {
         query: "term-that-does-not-exist",
-        library: "vercel/nextjs",
+        library: "nextjs",
         version: "15.1.0",
         max_results: 5,
         mode: "fts",
@@ -867,7 +845,7 @@ describe("Tool logic", () => {
     it("returns NOT_INSTALLED when the requested library version is missing locally", async () => {
       const result = await handleSearchDocs(deps, {
         query: "router",
-        library: "facebook/react",
+        library: "react",
         version: "19.2.0",
         mode: "fts",
       });
@@ -876,7 +854,7 @@ describe("Tool logic", () => {
       expect(result.structuredContent).toMatchObject({
         error: {
           code: "NOT_INSTALLED",
-          library: "facebook/react",
+          library: "react",
           version: "19.2.0",
           installed_versions: [],
         },
@@ -884,21 +862,15 @@ describe("Tool logic", () => {
     });
 
     it("lazily reindexes stale installs so search returns canonical doc_path", async () => {
-      cache.savePage(
-        "facebook",
-        "react",
-        "19.2.0",
+      cache.savePage("react", "19.2.0",
         "pg_use_ref",
         "# useRef\n\nUse refs to keep mutable values without re-rendering.",
       );
-      await indexer.indexPage(
-        "facebook",
-        "react",
-        "19.2.0",
+      await indexer.indexPage("react", "19.2.0",
         "pg_use_ref",
         "# useRef\n\nUse refs to keep mutable values without re-rendering.",
       );
-      cache.savePageIndex("facebook", "react", "19.2.0", [{
+      cache.savePageIndex("react", "19.2.0", [{
         page_uid: "pg_use_ref",
         path: "reference/react/useRef.md",
         title: "useRef",
@@ -909,8 +881,7 @@ describe("Tool logic", () => {
         updated_at: "2026-03-11T00:00:00Z",
       }]);
       cache.addInstalled({
-        namespace: "facebook",
-        name: "react",
+                slug: "react",
         version: "19.2.0",
         profile: "full",
         installed_at: "2026-03-11T00:00:00Z",
@@ -921,7 +892,7 @@ describe("Tool logic", () => {
 
       const result = await handleSearchDocs(deps, {
         query: "mutable values",
-        library: "facebook/react",
+        library: "react",
         version: "19.2.0",
         max_results: 5,
         mode: "fts",
@@ -931,18 +902,17 @@ describe("Tool logic", () => {
         doc_path: "reference/react/useRef.md",
         page_uid: "pg_use_ref",
       });
-      expect(cache.findInstalled("facebook", "react", "19.2.0")?.index_schema_version).toBeDefined();
+      expect(cache.findInstalled("react", "19.2.0")?.index_schema_version).toBeDefined();
     });
   });
 
   describe("search_docs (unified with modes)", () => {
     beforeEach(async () => {
-      cache.savePage("vercel", "nextjs", "15.1.0", "app-router", "# App Router\n\nThe App Router is a new routing model in Next.js 13+ that uses React Server Components.");
-      cache.savePage("vercel", "nextjs", "15.1.0", "data-fetching", "# Data Fetching\n\nNext.js supports getServerSideProps, getStaticProps, and ISR.");
-      await indexer.indexLibraryVersion("vercel", "nextjs", "15.1.0");
+      cache.savePage("nextjs", "15.1.0", "app-router", "# App Router\n\nThe App Router is a new routing model in Next.js 13+ that uses React Server Components.");
+      cache.savePage("nextjs", "15.1.0", "data-fetching", "# Data Fetching\n\nNext.js supports getServerSideProps, getStaticProps, and ISR.");
+      await indexer.indexLibraryVersion("nextjs", "15.1.0");
       cache.addInstalled({
-        namespace: "vercel",
-        name: "nextjs",
+                slug: "nextjs",
         version: "15.1.0",
         profile: "slim",
         installed_at: "2026-03-09T12:00:00Z",
@@ -985,7 +955,7 @@ describe("Tool logic", () => {
 
   describe("update_docs", () => {
     it("refreshes an installed library when the version stays the same but the manifest checksum changes", async () => {
-      cache.savePageIndex("acme", "widgets", "1.2.3", [{
+      cache.savePageIndex("widgets", "1.2.3", [{
         page_uid: "guide",
         path: "guide.md",
         title: "Guide",
@@ -995,11 +965,10 @@ describe("Tool logic", () => {
         headings: ["Guide"],
         updated_at: "2026-03-11T00:00:00Z",
       }]);
-      cache.savePage("acme", "widgets", "1.2.3", "guide", "# Guide\n\nOld content");
-      await indexer.indexLibraryVersion("acme", "widgets", "1.2.3");
+      cache.savePage("widgets", "1.2.3", "guide", "# Guide\n\nOld content");
+      await indexer.indexLibraryVersion("widgets", "1.2.3");
       cache.addInstalled({
-        namespace: "acme",
-        name: "widgets",
+                slug: "widgets",
         version: "1.2.3",
         profile: "full",
         installed_at: "2026-03-11T00:00:00Z",
@@ -1010,8 +979,7 @@ describe("Tool logic", () => {
 
       const manifest: Manifest = {
         schema_version: "1.0",
-        namespace: "acme",
-        name: "widgets",
+                slug: "widgets",
         display_name: "Acme Widgets",
         version: "1.2.3",
         channel: "stable",
@@ -1051,8 +1019,7 @@ describe("Tool logic", () => {
         resolve: async () => ({
           data: {
             library: {
-              namespace: "acme",
-              name: "widgets",
+                            slug: "widgets",
               display_name: "Acme Widgets",
               aliases: ["widgets"],
               homepage_url: "https://example.com",
@@ -1081,11 +1048,11 @@ describe("Tool logic", () => {
         }),
       } as unknown as ServerDeps["registryClient"];
 
-      const result = await handleUpdateDocs(deps, { library: "acme/widgets" });
+      const result = await handleUpdateDocs(deps, { library: "widgets" });
 
       expect(result.content[0].text).toContain("refreshed in place");
-      expect(cache.findInstalled("acme", "widgets", "1.2.3")?.manifest_checksum).toBe("sha256:new-manifest");
-      expect(cache.readPage("acme", "widgets", "1.2.3", "guide")).toContain("Refreshed content");
+      expect(cache.findInstalled("widgets", "1.2.3")?.manifest_checksum).toBe("sha256:new-manifest");
+      expect(cache.readPage("widgets", "1.2.3", "guide")).toContain("Refreshed content");
     });
 
     it("preserves an existing install when same-version refresh fails mid-download", async () => {
@@ -1100,15 +1067,14 @@ describe("Tool logic", () => {
         updated_at: "2026-03-11T00:00:00Z",
       }];
 
-      cache.saveManifest("acme", "widgets", "1.2.3", {
+      cache.saveManifest("widgets", "1.2.3", {
         provenance: { manifest_checksum: "sha256:old-manifest" },
       });
-      cache.savePageIndex("acme", "widgets", "1.2.3", oldPageIndex);
-      cache.savePage("acme", "widgets", "1.2.3", "guide", "# Guide\n\nOld content");
-      await indexer.indexLibraryVersion("acme", "widgets", "1.2.3");
+      cache.savePageIndex("widgets", "1.2.3", oldPageIndex);
+      cache.savePage("widgets", "1.2.3", "guide", "# Guide\n\nOld content");
+      await indexer.indexLibraryVersion("widgets", "1.2.3");
       cache.addInstalled({
-        namespace: "acme",
-        name: "widgets",
+                slug: "widgets",
         version: "1.2.3",
         profile: "full",
         installed_at: "2026-03-11T00:00:00Z",
@@ -1119,8 +1085,7 @@ describe("Tool logic", () => {
 
       const manifest: Manifest = {
         schema_version: "1.0",
-        namespace: "acme",
-        name: "widgets",
+                slug: "widgets",
         display_name: "Acme Widgets",
         version: "1.2.3",
         channel: "stable",
@@ -1172,8 +1137,7 @@ describe("Tool logic", () => {
         resolve: async () => ({
           data: {
             library: {
-              namespace: "acme",
-              name: "widgets",
+                            slug: "widgets",
               display_name: "Acme Widgets",
               aliases: ["widgets"],
               homepage_url: "https://example.com",
@@ -1190,7 +1154,7 @@ describe("Tool logic", () => {
         }),
         getManifest: async () => ({ data: manifest, meta: { cursor: null } }),
         getAllPageIndex: async () => refreshedPageIndex,
-        getPageContent: async (_namespace: string, _name: string, _version: string, pageUid: string) => {
+        getPageContent: async (_slug: string, _version: string, pageUid: string) => {
           if (pageUid === "guide") {
             return {
               data: {
@@ -1208,13 +1172,13 @@ describe("Tool logic", () => {
         },
       } as unknown as ServerDeps["registryClient"];
 
-      const result = await handleUpdateDocs(deps, { library: "acme/widgets" });
+      const result = await handleUpdateDocs(deps, { library: "widgets" });
 
       expect(result.content[0].text).toContain("FAQ download failed");
       expect(result.structuredContent).toMatchObject({
         results: [
           {
-            library: "acme/widgets",
+            library: "widgets",
             version: "1.2.3",
             status: "failed",
             error: "FAQ download failed",
@@ -1222,12 +1186,12 @@ describe("Tool logic", () => {
         ],
       });
 
-      expect(cache.findInstalled("acme", "widgets", "1.2.3")?.manifest_checksum).toBe("sha256:old-manifest");
-      expect(cache.loadPageIndex("acme", "widgets", "1.2.3")).toEqual(oldPageIndex);
-      expect(cache.readPage("acme", "widgets", "1.2.3", "guide")).toContain("Old content");
-      expect(cache.readPage("acme", "widgets", "1.2.3", "faq")).toBeNull();
+      expect(cache.findInstalled("widgets", "1.2.3")?.manifest_checksum).toBe("sha256:old-manifest");
+      expect(cache.loadPageIndex("widgets", "1.2.3")).toEqual(oldPageIndex);
+      expect(cache.readPage("widgets", "1.2.3", "guide")).toContain("Old content");
+      expect(cache.readPage("widgets", "1.2.3", "faq")).toBeNull();
       expect(
-        JSON.parse(readFileSync(join(cache.docsDir("acme", "widgets", "1.2.3"), "manifest.json"), "utf8")) as Manifest,
+        JSON.parse(readFileSync(join(cache.docsDir("widgets", "1.2.3"), "manifest.json"), "utf8")) as Manifest,
       ).toMatchObject({
         provenance: { manifest_checksum: "sha256:old-manifest" },
       });
@@ -1236,11 +1200,10 @@ describe("Tool logic", () => {
 
   describe("remove_docs", () => {
     it("removes a local install from both cache state and QMD index", async () => {
-      cache.savePage("acme", "widgets", "1.2.3", "guide", "# Guide\n\nLocal content");
-      await indexer.indexLibraryVersion("acme", "widgets", "1.2.3");
+      cache.savePage("widgets", "1.2.3", "guide", "# Guide\n\nLocal content");
+      await indexer.indexLibraryVersion("widgets", "1.2.3");
       cache.addInstalled({
-        namespace: "acme",
-        name: "widgets",
+                slug: "widgets",
         version: "1.2.3",
         profile: "full",
         installed_at: "2026-03-12T00:00:00Z",
@@ -1249,16 +1212,16 @@ describe("Tool logic", () => {
         pinned: false,
       });
 
-      const result = await handleRemoveDocs(deps, { library: "acme/widgets", version: "1.2.3" });
+      const result = await handleRemoveDocs(deps, { library: "widgets", version: "1.2.3" });
       expect(result.structuredContent).toMatchObject({
-        library: "acme/widgets",
+        library: "widgets",
         removed_versions: ["1.2.3"],
       });
-      expect(cache.findInstalled("acme", "widgets", "1.2.3")).toBeUndefined();
+      expect(cache.findInstalled("widgets", "1.2.3")).toBeUndefined();
 
       const search = await handleSearchDocs(deps, {
         query: "Local content",
-        library: "acme/widgets",
+        library: "widgets",
         version: "1.2.3",
       });
       expect(search.isError).toBe(true);
@@ -1271,8 +1234,8 @@ describe("Tool logic", () => {
   describe("single-page local indexing", () => {
     it("indexes a single page into QMD store", async () => {
       const content = "# API Reference\n\nDetailed API documentation for custom hooks.";
-      cache.savePage("vercel", "nextjs", "15.1.0", "api-ref", content);
-      await indexer.indexPage("vercel", "nextjs", "15.1.0", "api-ref", content);
+      cache.savePage("nextjs", "15.1.0", "api-ref", content);
+      await indexer.indexPage("nextjs", "15.1.0", "api-ref", content);
 
       const results = await indexer.searchFTS("custom hooks");
       expect(results.length).toBeGreaterThan(0);
@@ -1282,7 +1245,7 @@ describe("Tool logic", () => {
 
   describe("get_doc", () => {
     beforeEach(() => {
-      cache.savePageIndex("facebook", "react", "19.2.0", [{
+      cache.savePageIndex("react", "19.2.0", [{
         page_uid: "pg_use_ref",
         path: "reference/react/useRef.md",
         title: "useRef",
@@ -1292,16 +1255,12 @@ describe("Tool logic", () => {
         headings: ["useRef"],
         updated_at: "2026-03-11T00:00:00Z",
       }]);
-      cache.savePage(
-        "facebook",
-        "react",
-        "19.2.0",
+      cache.savePage("react", "19.2.0",
         "pg_use_ref",
         Array.from({ length: 80 }, (_, i) => `line ${i + 1}`).join("\n"),
       );
       cache.addInstalled({
-        namespace: "facebook",
-        name: "react",
+                slug: "react",
         version: "19.2.0",
         profile: "full",
         installed_at: "2026-03-11T00:00:00Z",
@@ -1313,7 +1272,7 @@ describe("Tool logic", () => {
 
     it("returns a bounded excerpt by doc_path", async () => {
       const result = await handleGetDoc(deps, {
-        library: "facebook/react",
+        library: "react",
         version: "19.2.0",
         doc_path: "reference/react/useRef.md",
         from_line: 5,
@@ -1322,7 +1281,7 @@ describe("Tool logic", () => {
 
       expect(result.content[0].text).toBe("line 5\nline 6\nline 7\nline 8");
       expect(result.structuredContent).toMatchObject({
-        library: "facebook/react",
+        library: "react",
         version: "19.2.0",
         doc_path: "reference/react/useRef.md",
         page_uid: "pg_use_ref",
@@ -1336,7 +1295,7 @@ describe("Tool logic", () => {
 
     it("defaults to a bounded top-of-page slice", async () => {
       const result = await handleGetDoc(deps, {
-        library: "facebook/react",
+        library: "react",
         version: "19.2.0",
         doc_path: "reference/react/useRef.md",
       });
@@ -1351,7 +1310,7 @@ describe("Tool logic", () => {
 
     it("supports around_line windows in the same tool", async () => {
       const result = await handleGetDoc(deps, {
-        library: "facebook/react",
+        library: "react",
         version: "19.2.0",
         page_uid: "pg_use_ref",
         around_line: 20,
@@ -1370,7 +1329,7 @@ describe("Tool logic", () => {
 
     it("returns the same bounded excerpt by page_uid with line numbers", async () => {
       const result = await handleGetDoc(deps, {
-        library: "facebook/react",
+        library: "react",
         version: "19.2.0",
         page_uid: "pg_use_ref",
         from_line: 5,
@@ -1389,7 +1348,7 @@ describe("Tool logic", () => {
 
     it("rejects mixed range styles", async () => {
       const result = await handleGetDoc(deps, {
-        library: "facebook/react",
+        library: "react",
         version: "19.2.0",
         doc_path: "reference/react/useRef.md",
         from_line: 5,
@@ -1403,7 +1362,7 @@ describe("Tool logic", () => {
     });
 
     it("returns PAGE_NOT_HYDRATED when metadata exists but content is missing", async () => {
-      cache.savePageIndex("facebook", "react", "19.2.1", [{
+      cache.savePageIndex("react", "19.2.1", [{
         page_uid: "pg_missing",
         path: "reference/react/missing.md",
         title: "Missing",
@@ -1414,8 +1373,7 @@ describe("Tool logic", () => {
         updated_at: "2026-03-11T00:00:00Z",
       }]);
       cache.addInstalled({
-        namespace: "facebook",
-        name: "react",
+                slug: "react",
         version: "19.2.1",
         profile: "full",
         installed_at: "2026-03-11T00:00:00Z",
@@ -1425,7 +1383,7 @@ describe("Tool logic", () => {
       });
 
       const result = await handleGetDoc(deps, {
-        library: "facebook/react",
+        library: "react",
         version: "19.2.1",
         doc_path: "reference/react/missing.md",
       });
@@ -1439,7 +1397,7 @@ describe("Tool logic", () => {
     });
 
     it("returns an explicit empty-content error for empty pages", async () => {
-      cache.savePageIndex("facebook", "react", "19.2.2", [{
+      cache.savePageIndex("react", "19.2.2", [{
         page_uid: "pg_empty",
         path: "reference/react/empty.md",
         title: "Empty",
@@ -1449,10 +1407,9 @@ describe("Tool logic", () => {
         headings: [],
         updated_at: "2026-03-11T00:00:00Z",
       }]);
-      cache.savePage("facebook", "react", "19.2.2", "pg_empty", "");
+      cache.savePage("react", "19.2.2", "pg_empty", "");
       cache.addInstalled({
-        namespace: "facebook",
-        name: "react",
+                slug: "react",
         version: "19.2.2",
         profile: "full",
         installed_at: "2026-03-11T00:00:00Z",
@@ -1462,7 +1419,7 @@ describe("Tool logic", () => {
       });
 
       const result = await handleGetDoc(deps, {
-        library: "facebook/react",
+        library: "react",
         version: "19.2.2",
         doc_path: "reference/react/empty.md",
       });
@@ -1486,15 +1443,14 @@ describe("Tool logic", () => {
       ];
 
       for (const p of pages) {
-        cache.savePage("facebook", "react", "19.0.0", p.uid, p.content);
+        cache.savePage("react", "19.0.0", p.uid, p.content);
       }
 
-      const indexed = await indexer.indexLibraryVersion("facebook", "react", "19.0.0");
+      const indexed = await indexer.indexLibraryVersion("react", "19.0.0");
       expect(indexed).toBe(3);
 
       cache.addInstalled({
-        namespace: "facebook",
-        name: "react",
+                slug: "react",
         version: "19.0.0",
         profile: "slim",
         installed_at: new Date().toISOString(),
@@ -1517,7 +1473,7 @@ describe("Tool logic", () => {
       // List installed
       const installed = cache.listInstalled();
       expect(installed.length).toBe(1);
-      expect(installed[0].namespace).toBe("facebook");
+      expect(installed[0].slug).toBe("react");
     });
   });
 });

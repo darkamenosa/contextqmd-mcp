@@ -96,11 +96,11 @@ The server uses a progressive retrieval model — search returns small snippets 
 1. Discover candidate libraries:
    `search_libraries({ query: "react refs" })`
 2. Install the exact docs package:
-   `install_docs({ library: "facebook/react", version: "19.2.0" })`
+   `install_docs({ library: "react", version: "19.2.0" })`
 3. Search the local index:
-   `search_docs({ query: "how can i optimize refs", library: "facebook/react", version: "19.2.0" })`
+   `search_docs({ query: "how can i optimize refs", library: "react", version: "19.2.0" })`
 4. Read a bounded excerpt from the best result:
-   `get_doc({ library: "facebook/react", version: "19.2.0", doc_path: "reference/react/useRef.md", from_line: 40, max_lines: 30 })`
+   `get_doc({ library: "react", version: "19.2.0", doc_path: "reference/react/useRef.md", from_line: 40, max_lines: 30 })`
 
 ### search_docs results
 

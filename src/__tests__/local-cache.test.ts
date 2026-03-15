@@ -28,39 +28,39 @@ describe("LocalCache", () => {
 
   describe("manifest operations", () => {
     it("saves and checks manifest", () => {
-      cache.saveManifest("vercel", "nextjs", "15.1.0", { version: "15.1.0" });
-      expect(cache.hasManifest("vercel", "nextjs", "15.1.0")).toBe(true);
-      expect(cache.hasManifest("vercel", "nextjs", "14.0.0")).toBe(false);
+      cache.saveManifest("nextjs", "15.1.0", { version: "15.1.0" });
+      expect(cache.hasManifest("nextjs", "15.1.0")).toBe(true);
+      expect(cache.hasManifest("nextjs", "14.0.0")).toBe(false);
     });
   });
 
   describe("page operations", () => {
     it("saves and reads a page", () => {
-      cache.savePage("vercel", "nextjs", "15.1.0", "getting-started", "# Getting Started\n\nContent here.");
-      const content = cache.readPage("vercel", "nextjs", "15.1.0", "getting-started");
+      cache.savePage("nextjs", "15.1.0", "getting-started", "# Getting Started\n\nContent here.");
+      const content = cache.readPage("nextjs", "15.1.0", "getting-started");
       expect(content).toBe("# Getting Started\n\nContent here.");
     });
 
     it("saves and reads a nested page UID", () => {
-      cache.savePage("vercel", "nextjs", "15.1.0", "docs/guide/routing", "# Routing");
-      const content = cache.readPage("vercel", "nextjs", "15.1.0", "docs/guide/routing");
+      cache.savePage("nextjs", "15.1.0", "docs/guide/routing", "# Routing");
+      const content = cache.readPage("nextjs", "15.1.0", "docs/guide/routing");
       expect(content).toBe("# Routing");
     });
 
     it("returns null for missing page", () => {
-      expect(cache.readPage("vercel", "nextjs", "15.1.0", "nonexistent")).toBeNull();
+      expect(cache.readPage("nextjs", "15.1.0", "nonexistent")).toBeNull();
     });
 
     it("counts pages", () => {
-      cache.savePage("vercel", "nextjs", "15.1.0", "page1", "# Page 1");
-      cache.savePage("vercel", "nextjs", "15.1.0", "page2", "# Page 2");
-      expect(cache.countPages("vercel", "nextjs", "15.1.0")).toBe(2);
+      cache.savePage("nextjs", "15.1.0", "page1", "# Page 1");
+      cache.savePage("nextjs", "15.1.0", "page2", "# Page 2");
+      expect(cache.countPages("nextjs", "15.1.0")).toBe(2);
     });
 
     it("lists page UIDs", () => {
-      cache.savePage("vercel", "nextjs", "15.1.0", "intro", "# Intro");
-      cache.savePage("vercel", "nextjs", "15.1.0", "api-ref", "# API Ref");
-      const uids = cache.listPageUids("vercel", "nextjs", "15.1.0");
+      cache.savePage("nextjs", "15.1.0", "intro", "# Intro");
+      cache.savePage("nextjs", "15.1.0", "api-ref", "# API Ref");
+      const uids = cache.listPageUids("nextjs", "15.1.0");
       expect(uids.sort()).toEqual(["api-ref", "intro"]);
     });
 
@@ -77,18 +77,18 @@ describe("LocalCache", () => {
         updated_at: "2026-03-12T00:00:00Z",
       }];
 
-      cache.savePageIndex("vercel", "nextjs", "15.1.0", pageIndex);
-      cache.savePage("vercel", "nextjs", "15.1.0", "docs/guide/routing", "# Routing");
+      cache.savePageIndex("nextjs", "15.1.0", pageIndex);
+      cache.savePage("nextjs", "15.1.0", "docs/guide/routing", "# Routing");
 
-      expect(cache.countPages("vercel", "nextjs", "15.1.0")).toBe(1);
-      expect(cache.listPageUids("vercel", "nextjs", "15.1.0")).toEqual(["docs/guide/routing"]);
+      expect(cache.countPages("nextjs", "15.1.0")).toBe(1);
+      expect(cache.listPageUids("nextjs", "15.1.0")).toEqual(["docs/guide/routing"]);
     });
   });
 
   describe("page-index operations", () => {
     it("saves page-index", () => {
       const pageIndex = [{ page_uid: "intro", title: "Intro" }];
-      cache.savePageIndex("vercel", "nextjs", "15.1.0", pageIndex);
+      cache.savePageIndex("nextjs", "15.1.0", pageIndex);
       // Just verify it doesn't throw — read is done via filesystem
     });
 
@@ -104,10 +104,10 @@ describe("LocalCache", () => {
         updated_at: "2026-03-11T00:00:00Z",
       }];
 
-      cache.savePageIndex("facebook", "react", "19.2.0", pageIndex);
+      cache.savePageIndex("react", "19.2.0", pageIndex);
 
-      expect(cache.loadPageIndex("facebook", "react", "19.2.0")).toEqual(pageIndex);
-      expect(cache.findPageByUid("facebook", "react", "19.2.0", "pg_use_ref")).toEqual(pageIndex[0]);
+      expect(cache.loadPageIndex("react", "19.2.0")).toEqual(pageIndex);
+      expect(cache.findPageByUid("react", "19.2.0", "pg_use_ref")).toEqual(pageIndex[0]);
     });
 
     it("resolves page metadata by canonical doc path", () => {
@@ -122,27 +122,26 @@ describe("LocalCache", () => {
         updated_at: "2026-03-11T00:00:00Z",
       }];
 
-      cache.savePageIndex("facebook", "react", "19.2.0", pageIndex);
+      cache.savePageIndex("react", "19.2.0", pageIndex);
 
-      expect(cache.findPageByPath("facebook", "react", "19.2.0", "reference/react/useRef.md")).toEqual(pageIndex[0]);
-      expect(cache.findPageByPath("facebook", "react", "19.2.0", "/reference/react/useRef")).toEqual(pageIndex[0]);
+      expect(cache.findPageByPath("react", "19.2.0", "reference/react/useRef.md")).toEqual(pageIndex[0]);
+      expect(cache.findPageByPath("react", "19.2.0", "/reference/react/useRef")).toEqual(pageIndex[0]);
     });
   });
 
   describe("remove version", () => {
     it("removes entire version directory", () => {
-      cache.savePage("vercel", "nextjs", "15.1.0", "page1", "content");
-      cache.saveManifest("vercel", "nextjs", "15.1.0", {});
-      cache.removeVersion("vercel", "nextjs", "15.1.0");
-      expect(cache.hasManifest("vercel", "nextjs", "15.1.0")).toBe(false);
-      expect(cache.countPages("vercel", "nextjs", "15.1.0")).toBe(0);
+      cache.savePage("nextjs", "15.1.0", "page1", "content");
+      cache.saveManifest("nextjs", "15.1.0", {});
+      cache.removeVersion("nextjs", "15.1.0");
+      expect(cache.hasManifest("nextjs", "15.1.0")).toBe(false);
+      expect(cache.countPages("nextjs", "15.1.0")).toBe(0);
     });
   });
 
   describe("installed state", () => {
     const lib: InstalledLibrary = {
-      namespace: "vercel",
-      name: "nextjs",
+      slug: "nextjs",
       version: "15.1.0",
       profile: "slim",
       installed_at: "2026-03-09T12:00:00Z",
@@ -156,15 +155,15 @@ describe("LocalCache", () => {
 
     it("adds and finds installed library", () => {
       cache.addInstalled(lib);
-      const found = cache.findInstalled("vercel", "nextjs", "15.1.0");
+      const found = cache.findInstalled("nextjs", "15.1.0");
       expect(found).toBeDefined();
       expect(found!.version).toBe("15.1.0");
       expect(found!.profile).toBe("slim");
     });
 
-    it("finds installed by namespace/name without version", () => {
+    it("finds installed by slug without version", () => {
       cache.addInstalled(lib);
-      const found = cache.findInstalled("vercel", "nextjs");
+      const found = cache.findInstalled("nextjs");
       expect(found).toBeDefined();
     });
 
@@ -178,13 +177,13 @@ describe("LocalCache", () => {
 
     it("removes installed", () => {
       cache.addInstalled(lib);
-      cache.removeInstalled("vercel", "nextjs", "15.1.0");
-      expect(cache.findInstalled("vercel", "nextjs", "15.1.0")).toBeUndefined();
+      cache.removeInstalled("nextjs", "15.1.0");
+      expect(cache.findInstalled("nextjs", "15.1.0")).toBeUndefined();
     });
 
     it("lists multiple installed libraries", () => {
       cache.addInstalled(lib);
-      cache.addInstalled({ ...lib, namespace: "rails", name: "rails", version: "8.0.0" });
+      cache.addInstalled({ ...lib, slug: "rails", version: "8.0.0" });
       expect(cache.listInstalled().length).toBe(2);
     });
   });

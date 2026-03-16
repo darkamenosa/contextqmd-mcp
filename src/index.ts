@@ -83,7 +83,7 @@ type InstallDocsInput = {
 
 type GetDocInput = {
   library: string;
-  version: string;
+  version?: string;
   doc_path?: string;
   page_uid?: string;
   from_line?: number;
@@ -414,7 +414,7 @@ async function ensureCurrentIndexSchema(
   }
 }
 
-function resolveCachedPage(cache: LocalCache, input: GetDocInput): ResolvedCachedPage | null {
+function resolveCachedPage(cache: LocalCache, input: GetDocInput & { version: string }): ResolvedCachedPage | null {
   const hasDocPath = typeof input.doc_path === "string";
   const hasPageUid = typeof input.page_uid === "string";
 
@@ -875,19 +875,23 @@ export async function handleGetDoc(deps: ServerDeps, input: GetDocInput): Promis
 
   const installed = deps.cache.findInstalled(library, input.version);
   if (!installed) {
-    return errorResult(`${library}@${input.version} is not installed.`, "NOT_INSTALLED");
+    const label = input.version ? `${library}@${input.version}` : library;
+    return errorResult(`${label} is not installed.`, "NOT_INSTALLED");
   }
+
+  const version = input.version ?? installed.version;
 
   const lookupCount = (input.doc_path ? 1 : 0) + (input.page_uid ? 1 : 0);
   if (lookupCount !== 1) {
     return errorResult("Exactly one of doc_path or page_uid must be provided.", "INVALID_LOOKUP");
   }
 
-  const page = resolveCachedPage(deps.cache, { ...input, library });
+  const resolvedInput = { ...input, library, version };
+  const page = resolveCachedPage(deps.cache, resolvedInput);
   if (!page) {
     return errorResult("Document not found in local cache.", "NOT_FOUND", {
       library,
-      version: input.version,
+      version,
       ...(input.doc_path ? { doc_path: normalizeDocPath(input.doc_path) } : {}),
       ...(input.page_uid ? { page_uid: input.page_uid } : {}),
     });
@@ -899,7 +903,7 @@ export async function handleGetDoc(deps: ServerDeps, input: GetDocInput): Promis
       "PAGE_NOT_HYDRATED",
       {
         library,
-        version: input.version,
+        version,
         doc_path: page.docPath,
         page_uid: page.pageUid,
       },
@@ -914,7 +918,7 @@ export async function handleGetDoc(deps: ServerDeps, input: GetDocInput): Promis
   if ((page.content ?? "").length === 0) {
     return errorResult("Page content is empty.", "EMPTY_CONTENT", {
       library,
-      version: input.version,
+      version,
       doc_path: page.docPath,
       page_uid: page.pageUid,
     });
@@ -1224,7 +1228,7 @@ function createServer(deps: ServerDeps): McpServer {
         library: z
           .string()
           .describe("Library slug"),
-        version: z.string().describe("Version"),
+        version: z.string().optional().describe("Version (defaults to latest installed)"),
         doc_path: z.string().optional().describe("Canonical markdown doc path (for example reference/react/useRef.md)"),
         page_uid: z.string().optional().describe("Internal page UID fallback"),
         from_line: z.number().int().positive().optional().describe("1-based inclusive line number to start from"),

@@ -858,7 +858,6 @@ export async function handleSearchDocs(deps: ServerDeps, input: SearchDocsInput)
       doc_path: result.docPath,
       page_uid: result.pageUid,
       title: result.title,
-      content_md: result.contentMd,
       score: result.score,
       snippet: result.snippet,
       line_start: result.lineStart,
@@ -1197,7 +1196,7 @@ function createServer(deps: ServerDeps): McpServer {
     {
       title: "Search Docs",
       description:
-        "Search installed documentation locally through QMD and return page-level markdown content from the local cache. This tool never fetches from the network. If a requested library/version is not installed, it returns NOT_INSTALLED.",
+        "Search installed documentation locally and return matching page metadata with snippets. Use get_doc to read full page content. This tool never fetches from the network. If a requested library/version is not installed, it returns NOT_INSTALLED.",
       inputSchema: {
         query: z.string().describe("Search query"),
         library: z

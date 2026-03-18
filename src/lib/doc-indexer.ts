@@ -55,6 +55,24 @@ export interface DocSearchResult {
 }
 
 /**
+ * Sanitize a query string for FTS5.
+ *
+ * FTS5 treats `-` as the NOT operator and other punctuation as syntax.
+ * This replaces hyphens between word characters with spaces and strips
+ * any remaining FTS5 operators that could cause parse errors.
+ */
+function sanitizeFTSQuery(query: string): string {
+  return query
+    // Replace hyphens between word chars with spaces (e.g. "server-side" → "server side")
+    .replace(/(\w)-(\w)/g, "$1 $2")
+    // Remove standalone hyphens (NOT operator) that could negate terms
+    .replace(/(^|\s)-(\s|$)/g, "$1$2")
+    // Remove other FTS5 syntax chars that aren't part of quoted phrases
+    .replace(/[{}()^*]/g, "")
+    .trim();
+}
+
+/**
  * Classify a query to pick the best search mode.
  *
  * Heuristics:
@@ -150,9 +168,9 @@ export class DocIndexer {
    * Parse a QMD collection name back to library coordinates.
    */
   static parseCollectionName(collectionName: string): { slug: string; version: string } | null {
-    const parts = collectionName.split("__");
-    if (parts.length !== 2) return null;
-    return { slug: parts[0], version: parts[1] };
+    const idx = collectionName.lastIndexOf("__");
+    if (idx <= 0 || idx === collectionName.length - 2) return null;
+    return { slug: collectionName.slice(0, idx), version: collectionName.slice(idx + 2) };
   }
 
   /**
@@ -355,7 +373,8 @@ export class DocIndexer {
     const collections = this.resolveCollections(options);
     const collectionFilter = collections.length === 1 ? collections[0] : undefined;
 
-    const results = store.searchFTS(query, limit * 2, collectionFilter);
+    const sanitized = sanitizeFTSQuery(query);
+    const results = store.searchFTS(sanitized, limit * 2, collectionFilter);
     return this.mapAnyResults(results, query, options, "fts").slice(0, limit);
   }
 

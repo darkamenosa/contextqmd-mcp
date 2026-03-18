@@ -484,12 +484,14 @@ function buildExcerpt(
     : excerptLines;
   const lineEnd = excerptLines.length === 0 ? clampedStart - 1 : clampedStart + excerptLines.length - 1;
 
-  return structuredTextResult(renderedLines.join("\n"), {
+  const contentText = renderedLines.join("\n");
+  return structuredTextResult(contentText, {
     library: page.library,
     version: page.version,
     doc_path: page.docPath,
     page_uid: page.pageUid,
     title: page.title,
+    content_md: contentText,
     line_start: clampedStart,
     line_end: lineEnd,
     truncated: endExclusive < totalLines,

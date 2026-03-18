@@ -1,6 +1,6 @@
 {
   "name": "contextqmd-mcp",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "MCP server for local-first, version-aware library documentation via ContextQMD",
   "license": "MIT",
   "repository": {

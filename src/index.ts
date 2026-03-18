@@ -642,7 +642,6 @@ async function installResolvedVersion(
     }
 
     const indexedCount = await indexer.indexLibraryVersion(slug, version);
-    await indexer.embed();
     if (backupDir) {
       cache.discardBackup(backupDir);
     }

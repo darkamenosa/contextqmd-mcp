@@ -15,7 +15,8 @@ import { LocalCache, normalizeDocPath } from "./lib/local-cache.js";
 import { DocIndexer, type SearchMode } from "./lib/doc-indexer.js";
 import type { Manifest, ManifestBundle, PageRecord } from "./lib/types.js";
 
-const VERSION = "0.1.0";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const VERSION = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8")).version as string;
 const DOC_INDEX_SCHEMA_VERSION = 2;
 const DEFAULT_EXCERPT_MAX_LINES = 60;
 const DEFAULT_EXPAND_BEFORE = 30;

@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "./lib/config.js";
 import { RegistryClient } from "./lib/registry-client.js";
 import { LocalCache, normalizeDocPath } from "./lib/local-cache.js";
-import { DocIndexer, type SearchMode } from "./lib/doc-indexer.js";
+import { DocIndexer, pickHighestVersion, type SearchMode } from "./lib/doc-indexer.js";
 import type { Manifest, ManifestBundle, PageRecord } from "./lib/types.js";
 import { inferLocalDocsSlug, stageLocalDocsPackage } from "./lib/local-docs.js";
 
@@ -874,20 +874,23 @@ export async function handleGetDoc(deps: ServerDeps, input: GetDocInput): Promis
     return errorResult("Error: library must be a canonical slug", "INVALID_LIBRARY");
   }
 
-  const installed = deps.cache.findInstalled(library, input.version);
+  let version = input.version;
+  if (!version) {
+    const versions = installedVersions(deps.cache, library);
+    version = pickHighestVersion(versions);
+  }
+  const installed = version ? deps.cache.findInstalled(library, version) : undefined;
   if (!installed) {
     const label = input.version ? `${library}@${input.version}` : library;
     return errorResult(`${label} is not installed.`, "NOT_INSTALLED");
   }
-
-  const version = input.version ?? installed.version;
 
   const lookupCount = (input.doc_path ? 1 : 0) + (input.page_uid ? 1 : 0);
   if (lookupCount !== 1) {
     return errorResult("Exactly one of doc_path or page_uid must be provided.", "INVALID_LOOKUP");
   }
 
-  const resolvedInput = { ...input, library, version };
+  const resolvedInput = { ...input, library, version: version! };
   const page = resolveCachedPage(deps.cache, resolvedInput);
   if (!page) {
     return errorResult("Document not found in local cache.", "NOT_FOUND", {

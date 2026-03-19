@@ -59,7 +59,7 @@ export interface DocSearchResult {
  * Prefers "latest" > semver-like (highest numeric) > most recently added (last).
  * Handles non-semver versions like "12.x", "stable", "v2.0" gracefully.
  */
-function pickHighestVersion(versions: string[]): string | undefined {
+export function pickHighestVersion(versions: string[]): string | undefined {
   if (versions.length === 0) return undefined;
   if (versions.length === 1) return versions[0];
   if (versions.includes("latest")) return "latest";

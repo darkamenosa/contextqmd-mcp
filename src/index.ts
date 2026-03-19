@@ -14,6 +14,7 @@ import { RegistryClient } from "./lib/registry-client.js";
 import { LocalCache, normalizeDocPath } from "./lib/local-cache.js";
 import { DocIndexer, type SearchMode } from "./lib/doc-indexer.js";
 import type { Manifest, ManifestBundle, PageRecord } from "./lib/types.js";
+import { inferLocalDocsSlug, stageLocalDocsPackage } from "./lib/local-docs.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const VERSION = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8")).version as string;
@@ -1122,6 +1123,70 @@ function extractTitle(content: string, fallback: string): string {
   return match ? match[1].trim() : fallback;
 }
 
+async function handleAddLocalDocs(
+  deps: ServerDeps,
+  input: { paths: string[]; name?: string },
+): Promise<ToolResult> {
+  const { cache, indexer } = deps;
+
+  if (!input.paths || input.paths.length === 0) {
+    return errorResult("Provide at least one local file or directory path.", "INVALID_ARGUMENTS");
+  }
+
+  const { slug, displayName } = inferLocalDocsSlug(input.paths, input.name);
+  const existing = cache.findInstalled(slug, LOCAL_DOCS_VERSION);
+  if (existing && isRegistryInstall(existing)) {
+    return errorResult(
+      `${slug}@${LOCAL_DOCS_VERSION} is already reserved by a registry package.`,
+      "NAME_CONFLICT",
+      { library: slug, version: LOCAL_DOCS_VERSION },
+    );
+  }
+
+  const backupDir = existing ? cache.backupVersion(slug, LOCAL_DOCS_VERSION) : null;
+  const stagingRoot = cache.createTempInstallDir(slug, LOCAL_DOCS_VERSION);
+  const stagedDocsDir = join(stagingRoot, "docs");
+
+  try {
+    mkdirSync(stagedDocsDir, { recursive: true });
+    const staged = stageLocalDocsPackage(stagedDocsDir, slug, displayName, input.paths);
+    cache.commitStagedVersion(slug, LOCAL_DOCS_VERSION, stagedDocsDir);
+    const indexedCount = await indexer.indexLibraryVersion(slug, LOCAL_DOCS_VERSION);
+    if (backupDir) cache.discardBackup(backupDir);
+
+    cache.addInstalled({
+      slug,
+      version: LOCAL_DOCS_VERSION,
+      profile: "full",
+      installed_at: new Date().toISOString(),
+      manifest_checksum: staged.manifestChecksum,
+      page_count: staged.pageCount,
+      index_schema_version: DOC_INDEX_SCHEMA_VERSION,
+      source_kind: "local",
+      source_paths: staged.sourcePaths,
+      display_name: staged.displayName,
+    });
+
+    return structuredTextResult(
+      `Added local docs as ${slug}@${LOCAL_DOCS_VERSION} (${indexedCount} pages indexed)`,
+      {
+        library: slug,
+        version: LOCAL_DOCS_VERSION,
+        source_kind: "local",
+        page_count: staged.pageCount,
+        indexed_count: indexedCount,
+        source_paths: staged.sourcePaths,
+      },
+    );
+  } catch (error) {
+    await indexer.removeLibraryVersion(slug, LOCAL_DOCS_VERSION);
+    if (backupDir) {
+      cache.restoreVersionFromBackup(slug, LOCAL_DOCS_VERSION, backupDir);
+    }
+    throw error;
+  }
+}
+
 function createServer(deps: ServerDeps): McpServer {
   const server = new McpServer(
     { name: "ContextQMD", version: VERSION },
@@ -1271,6 +1336,26 @@ function createServer(deps: ServerDeps): McpServer {
       },
     },
     async (input) => handleRemoveDocs(deps, input),
+  );
+
+  // ── Tool 8: add_local_docs ──────────────────────────────────────
+  server.registerTool(
+    "add_local_docs",
+    {
+      title: "Add Local Docs",
+      description:
+        "Index local files or directories as a searchable documentation package. Use this to make project docs, READMEs, or any local markdown files searchable via search_docs.",
+      inputSchema: {
+        paths: z
+          .array(z.string())
+          .describe("Absolute paths to local files or directories containing docs"),
+        name: z
+          .string()
+          .optional()
+          .describe("Name for the local docs package (auto-derived from path if omitted)"),
+      },
+    },
+    async (input) => handleAddLocalDocs(deps, input),
   );
 
   return server;

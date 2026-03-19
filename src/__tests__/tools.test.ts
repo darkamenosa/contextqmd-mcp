@@ -351,8 +351,8 @@ describe("Tool logic", () => {
       expect(search.structuredContent?.results[0]).toMatchObject({
         doc_path: "guides/getting-started.md",
         page_uid: "guide",
-        content_md: "# Getting Started\n\nBundle installs into the local markdown cache.",
       });
+      expect(search.structuredContent?.results[0]).not.toHaveProperty("content_md");
     });
 
     it("is a no-op when the same library version is already installed with the same manifest checksum", async () => {
@@ -650,8 +650,9 @@ describe("Tool logic", () => {
         mode: "fts",
       });
       expect(search.structuredContent?.results[0]).toMatchObject({
-        content_md: "# Guide\n\nNew content",
+        doc_path: "guide.md",
       });
+      expect(search.structuredContent?.results[0]).not.toHaveProperty("content_md");
     });
 
     it("falls back to page fetches when a supported bundle is incomplete", async () => {
@@ -841,10 +842,10 @@ describe("Tool logic", () => {
         doc_path: "reference/react/useRef.md",
         page_uid: "pg_use_ref",
         title: "useRef",
-        content_md: "# useRef\n\n## Optimize refs\n\nUse refs to keep mutable values without re-rendering.",
         search_mode: "fts",
         url: "https://react.dev/reference/react/useRef",
       });
+      expect(result.structuredContent?.results[0]).not.toHaveProperty("content_md");
       expect(result.structuredContent?.results[0].score).toEqual(expect.any(Number));
       expect(result.structuredContent?.results[0].line_start).toEqual(expect.any(Number));
       expect(result.structuredContent?.results[0].line_end).toEqual(expect.any(Number));

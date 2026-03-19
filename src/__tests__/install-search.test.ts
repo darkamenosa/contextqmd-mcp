@@ -173,7 +173,6 @@ describe("Install → Search (bundle-first local flow)", () => {
       version: "3.0.0",
       doc_path: "guide/routing.md",
       page_uid: "routing",
-      content_md: "# Routing\n\nBundle-first installs keep search local.",
     });
   });
 });

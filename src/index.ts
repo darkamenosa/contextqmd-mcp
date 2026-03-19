@@ -406,7 +406,6 @@ async function ensureCurrentIndexSchema(
     if ((lib.index_schema_version ?? 0) >= DOC_INDEX_SCHEMA_VERSION) continue;
     await indexer.removeLibraryVersion(lib.slug, lib.version);
     await indexer.indexLibraryVersion(lib.slug, lib.version);
-    await indexer.embed();
     cache.addInstalled({
       ...lib,
       page_count: cache.countPages(lib.slug, lib.version),
